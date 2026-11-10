@@ -13,7 +13,7 @@ Built for the NEAR Hackathon 2026, privacy track.
 | Level | Scope | State |
 |---|---|---|
 | 0 | Landing page (3D robot), navbar, app shell, wallet connect, session key, mainnet/testnet switch | Done |
-| 1 | Credits contract (Rust), tests, security pass | Next |
+| 1 | Credits contract (Rust), tests, security pass | Contract + tests + security report done; testnet deploy and gateway stub next |
 | 2 | Every screen final, on mock data | Planned |
 | 3 | Contract and gateway wired to the UI | Planned |
 
@@ -35,6 +35,13 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
 - **Network switch:** `src/config/networks.ts` is the single config map (network, contract ID, RPC). Switching rebuilds the selector in place, with no page reload, and keeps each network's login in separate storage. On testnet the Funding page shows "mainnet only", because NEAR Intents has no testnet.
 - **Landing page:** the robot is built entirely in three.js 0.160 (`src/landing/robotScene.ts`). Scroll moves the camera from the full body to a close-up of the head, and the face switches to a quote mark in the last section.
 
+## Docs
+
+- [Workflow](docs/WORKFLOW.md): how a session goes from deposit to settlement
+- [Contract spec](docs/CONTRACT_SPEC.md): state, functions, limits, security properties
+- [Security report](docs/SECURITY_REPORT.md): audit checklist, tools run, findings
+- [Contract README](contract/README.md): build, test, deploy
+
 ## Project layout
 
 ```
@@ -45,6 +52,8 @@ src/
   landing/                landing page, 3D robot scene, copy
   components/             navbar, wallet modal, layouts, session-key card
   pages/                  Dashboard, Chat, Funding, Receipts, Settings
+contract/                 Rust credits contract (near-sdk 5.30), unit + sandbox tests
+docs/                     workflow, contract spec, security report
 ```
 
 ## Deploy
