@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nexora · Private AI on NEAR</title>
+    <meta name="description" content="Private AI chat on NEAR: choose whether to hide who pays, what you ask, or both." />
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Node globals some NEAR wallet modules expect (HERE: global, Meteor: process.env) -->
+    <script>
+      window.global = window.global || window
+      window.process = window.process || { env: {} }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
