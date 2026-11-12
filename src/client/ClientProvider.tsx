@@ -1,14 +1,19 @@
 import { useMemo, type ReactNode } from 'react'
 import { useNear } from '../wallet/context'
 import { ClientContext } from './context'
+import { LiveClient } from './live'
 import { MockClient } from './mock'
 
 /**
- * Provides the NexoraClient for the current network. Level 2: always the mock.
- * Level 3 replaces the factory below with the live client; screens don't change.
+ * Wallet connected -> LiveClient: real contract reads and transactions, gateway for chat + settle.
+ * Demo account or no wallet -> MockClient: everything simulated, nothing on-chain.
  */
 export function ClientProvider({ children }: { children: ReactNode }) {
-  const { networkId } = useNear()
-  const client = useMemo(() => new MockClient(networkId), [networkId])
+  const { networkId, config, selector, accountId, isDemo } = useNear()
+  const live = !!selector && !!accountId && !isDemo
+  const client = useMemo(
+    () => (live && selector ? new LiveClient(config, selector) : new MockClient(networkId)),
+    [live, selector, config, networkId],
+  )
   return <ClientContext.Provider value={client}>{children}</ClientContext.Provider>
 }

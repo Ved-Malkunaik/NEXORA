@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useClient, useClientQuery, useClientVersion, useMockControls, useNow } from '../client/context'
+import { GATEWAY_URL } from '../client/live'
 import type { PrivacyMode } from '../client/types'
 import { MODE_INFO, TTL_OPTIONS, prefs } from '../components/actions'
 import { PageHeader } from '../components/Layouts'
@@ -75,6 +76,7 @@ export function Settings() {
       </div>
 
       <div className="grid-2">
+        <GatewayCard />
         <DevPanel />
         {accountId && <CloseAccount accountId={accountId} />}
       </div>
@@ -248,6 +250,64 @@ function CloseAccount({ accountId }: { accountId: string }) {
       >
         <p>Your receipt history in the contract is deleted. You can register again later with a new deposit.</p>
       </Modal>
+    </section>
+  )
+}
+
+interface Health {
+  contract: string
+  gateway: string | null
+  can_settle: boolean
+  model: string
+}
+
+function GatewayCard() {
+  const client = useClient()
+  const [tick, setTick] = useState(0)
+  const health = useClientQuery<Health>(
+    async () => {
+      const r = await fetch(`${GATEWAY_URL}/v1/health`).catch(() => {
+        throw new Error('Not reachable. Start it with: cd gateway && npm start')
+      })
+      return r.json()
+    },
+    [tick],
+  )
+  if (client.kind !== 'live') return null
+  const h = health.data
+  return (
+    <section className="card">
+      <div className="card-head">
+        <span className="label">Gateway</span>
+        <span className={`badge ${h?.can_settle ? 'badge-ok' : h ? 'badge-warn' : 'badge-err'}`}>
+          {h ? (h.can_settle ? 'Ready' : 'No settle key') : health.loading ? 'Checking' : 'Offline'}
+        </span>
+      </div>
+      <h3>Meters chat and settles sessions</h3>
+      <p className="muted small">
+        <code>{GATEWAY_URL}</code>
+      </p>
+      {health.error && <p className="error small">{health.error}</p>}
+      {h && (
+        <ul className="kv kv-row small">
+          <li>
+            <span className="muted">Settles as</span>
+            <span className="mono">{h.gateway ?? 'not configured'}</span>
+          </li>
+          <li>
+            <span className="muted">Contract</span>
+            <span className="mono">{h.contract}</span>
+          </li>
+          <li>
+            <span className="muted">Model</span>
+            <span>{h.model}</span>
+          </li>
+        </ul>
+      )}
+      {h && !h.can_settle && <p className="small error">Add GATEWAY_ACCOUNT_ID and GATEWAY_PRIVATE_KEY to gateway/.env and restart it.</p>}
+      <button className="btn btn-sm" onClick={() => setTick((t) => t + 1)}>
+        Check again
+      </button>
     </section>
   )
 }

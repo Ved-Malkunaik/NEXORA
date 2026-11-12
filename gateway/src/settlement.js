@@ -79,5 +79,29 @@ export function createGateway(cfg = readConfig()) {
     return { record, receipt_hash: hash, outcome }
   }
 
-  return { getSession, getConfig, settle }
+  async function getReceipts(accountId) {
+    return provider.callFunction({ contractId: cfg.contractId, method: 'get_receipts', args: { account_id: accountId } })
+  }
+
+  /** Settle with an exact yocto amount and receipt hash (used by the server). Returns the tx hash. */
+  async function settleExact(sessionId, spentYocto, hash) {
+    if (!cfg.privateKey || !cfg.gatewayId) {
+      throw new Error('GATEWAY_ACCOUNT_ID and GATEWAY_PRIVATE_KEY are not set in gateway/.env')
+    }
+    const account = new Account(cfg.gatewayId, provider, cfg.privateKey)
+    const r = await account.callFunctionRaw({
+      contractId: cfg.contractId,
+      methodName: 'settle_session',
+      args: { session_id: String(sessionId), spent: String(spentYocto), receipt_hash: hash },
+      gas: teraToGas('30'),
+    })
+    const failure = r?.status?.Failure
+    if (failure) {
+      const msg = JSON.stringify(failure).match(/Smart contract panicked: ([^"\\]+)/)
+      throw new Error(msg ? msg[1] : JSON.stringify(failure))
+    }
+    return { tx: r?.transaction?.hash ?? r?.transaction_outcome?.id }
+  }
+
+  return { getSession, getConfig, getReceipts, settle, settleExact }
 }

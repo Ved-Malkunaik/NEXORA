@@ -22,6 +22,21 @@ async function query<T>(cfg: NetworkConfig, params: Record<string, unknown>): Pr
   throw lastErr instanceof Error ? lastErr : new Error('RPC unavailable')
 }
 
+/** Read-only contract call (`view` method). Returns the parsed JSON result. */
+export async function viewFunction<T>(cfg: NetworkConfig, method: string, args: object = {}): Promise<T> {
+  const bytes = new TextEncoder().encode(JSON.stringify(args))
+  let bin = ''
+  bytes.forEach((b) => (bin += String.fromCharCode(b)))
+  const r = await query<{ result: number[] }>(cfg, {
+    request_type: 'call_function',
+    finality: 'optimistic',
+    account_id: cfg.contractId,
+    method_name: method,
+    args_base64: btoa(bin),
+  })
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(r.result))) as T
+}
+
 export interface AccountView {
   amount: string
   locked: string

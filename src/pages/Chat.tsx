@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useClient, useClientQuery, useNow } from '../client/context'
+import { GATEWAY_URL } from '../client/live'
 import type { ChatMessage, PrivacyMode, Proof, SessionInfo } from '../client/types'
 import { MODE_INFO, OpenSessionModal, SessionCard, prefs, sessionPhase } from '../components/actions'
 import { PageHeader, RequireWallet } from '../components/Layouts'
@@ -34,6 +35,7 @@ export function Chat() {
           </div>
         </div>
       </PageHeader>
+      <LiveNotice />
       <RequireWallet what="start a private chat">{accountId && <ChatBody accountId={accountId} mode={mode} />}</RequireWallet>
     </>
   )
@@ -310,7 +312,7 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
     <section className="card proof">
       <div className="card-head">
         <span className="label">{mode === 'B' ? 'TEE attestation' : 'Payment proof'}</span>
-        {p ? <span className="badge badge-ok">{p.verified ? 'Verified' : 'Unverified'} · mock</span> : <span className="badge badge-dim">Waiting</span>}
+        {p ? <span className={`badge ${p.verified ? 'badge-ok' : 'badge-warn'}`}>{p.verified ? 'Verified' : 'Not verified'}{p.raw?.mock ? ' · mock' : ''}</span> : <span className="badge badge-dim">Waiting</span>}
       </div>
       {!session ? (
         <p className="muted small">Open a session to see where your prompt runs and how it was paid for.</p>
@@ -395,5 +397,17 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
         </p>
       )}
     </section>
+  )
+}
+
+/** Live mode: be explicit about what is real (credits, metering, settlement) and what is not yet (model replies). */
+function LiveNotice() {
+  const client = useClient()
+  if (client.kind !== 'live') return null
+  return (
+    <p className="callout small" style={{ marginBottom: 14 }}>
+      <strong>Live on testnet.</strong> Sessions, metering and settlement are real transactions on the credits contract, through the gateway at{' '}
+      <code>{GATEWAY_URL}</code>. Model replies are simulated until the NEAR AI Cloud key is configured on the gateway.
+    </p>
   )
 }
