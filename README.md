@@ -13,7 +13,7 @@ Built for the NEAR Hackathon 2026, privacy track.
 | Level | Scope | State |
 |---|---|---|
 | 0 | Landing page (3D robot), navbar, app shell, wallet connect, session key, mainnet/testnet switch | Done |
-| 1 | Credits contract (Rust), tests, security pass | Contract, tests, security report and gateway stub done; testnet deploy needs your account |
+| 1 | Credits contract (Rust), tests, security pass, gateway stub | Done. Live on testnet at `credits.vedd.testnet` |
 | 2 | Every screen final, on mock data | Planned |
 | 3 | Contract and gateway wired to the UI | Planned |
 
@@ -34,6 +34,17 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
 - **Account abstraction (session key):** the selector is set up with `createAccessKeyFor`, so sign-in adds a function-call access key that can only call `open_session` and `reclaim_session` on the credits contract. After that one approval, those calls need no wallet popup. Payable calls (`deposit`, `withdraw`) still go through the wallet, because function-call keys cannot attach deposits. The dashboard reads the key back from chain with `view_access_key_list`.
 - **Network switch:** `src/config/networks.ts` is the single config map (network, contract ID, RPC). Switching rebuilds the selector in place, with no page reload, and keeps each network's login in separate storage. On testnet the Funding page shows "mainnet only", because NEAR Intents has no testnet.
 - **Landing page:** the robot is built entirely in three.js 0.160 (`src/landing/robotScene.ts`). Scroll moves the camera from the full body to a close-up of the head, and the face switches to a quote mark in the last section.
+
+## Testnet deployment
+
+| Role | Account |
+|---|---|
+| Contract | [`credits.vedd.testnet`](https://testnet.nearblocks.io/address/credits.vedd.testnet) |
+| Owner | `vedd.testnet` |
+| Gateway (only account that can settle) | `gateway.vedd.testnet` |
+
+Deployed from commit `43adcd9` (wasm sha256 `0799b236c165b9b9…`), after CI passed every job (fmt, clippy, 54 unit tests, 4 sandbox integration tests, audit).
+Smoke test on testnet: deposit 0.2 NEAR → open session (cap 0.05) → settle by a non-gateway account rejected → gateway settles 0.01 (0.04 refunded) → second settle rejected → receipt stored with hash only.
 
 ## Docs
 

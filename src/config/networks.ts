@@ -32,7 +32,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     helperUrl: 'https://helper.testnet.near.org',
     explorerUrl: 'https://testnet.nearblocks.io',
     indexerUrl: 'https://testnet-api.kitwallet.app',
-    contractId: env.VITE_TESTNET_CONTRACT_ID || 'nexora-credits.testnet',
+    contractId: env.VITE_TESTNET_CONTRACT_ID || 'credits.vedd.testnet',
     intentsSupported: false,
   },
   mainnet: {
