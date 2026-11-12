@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
-      - run: ../.github/scripts/run-annotated.sh clippy cargo clippy --all-features --lib --tests -- --deny warnings --warn clippy::all --warn clippy::nursery
+      - run: bash ../.github/scripts/run-annotated.sh clippy cargo clippy --all-features --lib --tests -- --deny warnings --warn clippy::all --warn clippy::nursery
 
   test:
     name: Unit and sandbox integration tests
@@ -30,9 +30,9 @@ jobs:
       - name: Build wasm
         run: cargo near build non-reproducible-wasm
       - name: Unit tests
-        run: ../.github/scripts/run-annotated.sh unit-tests cargo test --lib
+        run: bash ../.github/scripts/run-annotated.sh unit-tests cargo test --lib
       - name: Sandbox integration tests
-        run: ../.github/scripts/run-annotated.sh integration-tests cargo test --test integration -- --test-threads=1 --nocapture
+        run: bash ../.github/scripts/run-annotated.sh integration-tests cargo test --test integration -- --test-threads=1 --nocapture
 
   audit:
     name: Dependency audit
