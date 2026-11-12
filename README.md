@@ -2,9 +2,9 @@
 
 A chat app where you choose which privacy axis to protect:
 
-- **Mode A: hide who pays.** Requests are paid with zkAPI credits.
-- **Mode B: hide what you ask.** Prompts run in a TEE on NEAR AI Cloud, and the UI shows the attestation.
-- **Funding:** top up from NEAR or stablecoins through NEAR Intents (mainnet only).
+- **Mode B: hide what you ask.** Prompts run in a TEE on NEAR AI Cloud. The gateway verifies the attestation before sending your prompt, and the UI lists every check. **Working.**
+- **Mode A: hide who pays.** Planned with zkAPI credits. **Not implemented: a labelled preview only.** Payment is still linked to your account.
+- **Funding:** deposit NEAR directly. Stablecoin top-ups show real NEAR Intents (1Click) dry-run prices; executing the swap is not wired.
 
 Built for the NEAR Hackathon 2026, privacy track.
 
@@ -15,7 +15,20 @@ Built for the NEAR Hackathon 2026, privacy track.
 | 0 | Landing page (3D robot), navbar, app shell, wallet connect, session key, mainnet/testnet switch | Done |
 | 1 | Credits contract (Rust), tests, security pass, gateway stub | Done. Live on testnet at `credits.vedd.testnet` |
 | 2 | Every screen final, on mock data | Done. UI frozen; runs on a typed mock client (`src/client`) |
-| 3 | Contract and gateway wired to the UI | Planned |
+| 3 | Contract and gateway wired to the UI | Done on testnet. Real deposits, sessions, metering and settlement; real TEE attestation; signed gateway requests; real Intents quotes |
+
+What is real and what is not, exactly:
+
+| Piece | State |
+|---|---|
+| Credits contract: deposit, withdraw, open, settle, reclaim, receipts | Real, on testnet |
+| Gateway metering and settlement | Real. The gateway charges what it metered, never more than the cap |
+| Gateway caller authentication | Real. Every request is signed by a per-session chat key registered on-chain |
+| TEE attestation (Intel TDX + NVIDIA GPU) | Real, fetched and verified live from NEAR AI Cloud, no API key needed |
+| Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |
+| Reply signature check | Implemented and unit-tested, not yet run against the live service (needs the API key) |
+| Mode A (zkAPI) | Not implemented. Preview only |
+| NEAR Intents | Real dry-run prices. No swap execution |
 
 ## Run it
 
@@ -25,6 +38,22 @@ npm run dev
 ```
 
 Open the printed URL, click **Connect wallet**, and pick a wallet. The app starts on testnet.
+
+For live chat and settlement, run the gateway in a second terminal:
+
+```bash
+cd gateway
+npm install
+cp .env.example .env    # set CONTRACT_ID, GATEWAY_ACCOUNT_ID, GATEWAY_PRIVATE_KEY, optionally NEARAI_API_KEY
+npm start
+```
+
+Check the whole flow on testnet without the browser (needs near-cli-rs with your key in the keychain):
+
+```bash
+cd gateway
+npm run smoke -- <your-account>.testnet
+```
 
 To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TESTNET_CONTRACT_ID`.
 
@@ -41,6 +70,14 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
 - **The mock** ([src/client/mock.ts](src/client/mock.ts)) enforces the contract's rules and error messages, streams chat replies with per-token metering, and produces Mode B attestations and Mode A payment proofs, all labelled mock.
 - **Try it without a wallet:** on any app page, choose *Explore with a demo account*. Everything is simulated and nothing touches the chain.
 - **Developer panel** (Settings): simulate failures, move the mock clock forward to test expiry and reclaim, reset mock data.
+
+## How Level 3 works
+
+- **Live client** ([src/client/live.ts](src/client/live.ts)): the same interface as the mock, backed by the contract (wallet for payable calls, session key for `open_session` and `reclaim_session`) and the gateway. With a wallet connected the app is live; the demo account stays on the mock.
+- **Gateway** ([gateway/src/server.js](gateway/src/server.js)): checks each session on-chain, meters per token, stops at the cap, and settles with a function-call key that can only call `settle_session`. It stores token counts, never prompts or replies.
+- **Who is calling** ([gateway/src/auth.js](gateway/src/auth.js)): opening a session also registers a per-session chat key on-chain. The gateway accepts a chat or settle request only if that key signed it, so nobody else can spend or close your session. No extra wallet popup.
+- **TEE attestation** ([gateway/src/nearai.js](gateway/src/nearai.js)): six checks before a prompt is sent, three more on the reply. The chat page lists each one with pass or fail, plus the raw quote so you can re-verify.
+- **Intents quotes** ([src/client/intents.ts](src/client/intents.ts)): live dry-run prices from the 1Click API.
 
 ## Testnet deployment
 
@@ -71,7 +108,7 @@ src/
   components/             navbar, wallet modal, layouts, session-key card
   pages/                  Dashboard, Chat, Funding, Receipts, Settings
 contract/                 Rust credits contract (near-sdk 5.30), unit + sandbox tests
-gateway/                  Node stub: reads sessions, settles them with a receipt hash
+gateway/                  Node service: session auth, metering, NEAR AI Cloud + attestation, settlement
 docs/                     workflow, contract spec, security report
 ```
 
@@ -81,8 +118,11 @@ Any static host works. `vercel.json` rewrites all routes to `index.html` for cli
 
 ## Privacy limits
 
-These will be expanded as the features land:
+- **The gateway operator sees your prompts.** The TEE hides them from the model provider, not from the gateway.
+- You trust the gateway's attestation checks unless you re-verify the raw quote yourself.
+- Mode B does not make payment anonymous: sessions, caps, spend and timing are public on-chain under your account.
+- Mode A is not implemented, so nothing hides who pays today.
+- Deposits and withdrawals are public on-chain.
+- Chat transcripts are stored unencrypted in your browser's localStorage.
 
-- The funding deposit is public on-chain.
-- Mode B hides the prompt from the model provider, but it does not make payment anonymous.
-- zkAPI does not hide your IP address or the prompt contents.
+Full list with severities: [security report](docs/SECURITY_REPORT.md).

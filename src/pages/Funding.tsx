@@ -152,6 +152,9 @@ function IntentsForm({ accountId, live }: { accountId: string; live: boolean }) 
               <Near yocto={quote.amount_out} />
               <span className="muted small">as credits</span>
             </div>
+            {quote.source === '1click' && (
+              <p className="small muted">Priced by NEAR Intents solvers right now. The swap delivers wNEAR to your NEAR Intents balance; unwrapping it and depositing it as credits is a second step.</p>
+            )}
             <ul className="kv kv-row small">
               <li>
                 <span className="muted">You send</span>
@@ -171,7 +174,7 @@ function IntentsForm({ accountId, live }: { accountId: string; live: boolean }) 
               </li>
               <li>
                 <span className="muted">Quote</span>
-                <span className={expired ? 'error' : ''}>{expired ? 'Expired' : `Valid ${formatDuration(quote.expires_at - now)}`} · dry run · mock rate</span>
+                <span className={expired ? 'error' : ''}>{expired ? 'Expired' : `Valid ${formatDuration(quote.expires_at - now)}`} · dry run · {quote.source === '1click' ? 'live 1Click price' : quote.source === 'direct' ? 'no swap' : 'mock rate'}</span>
               </li>
             </ul>
             <div className="row" style={{ marginTop: 14 }}>

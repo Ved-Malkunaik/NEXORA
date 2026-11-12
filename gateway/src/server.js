@@ -4,19 +4,27 @@
 //   POST /v1/chat                      stream a reply (NDJSON), metered against the on-chain cap
 //   GET  /v1/metering?ids=1,2          metered spend per open session
 //   POST /v1/sessions/:id/settle       settle_session on-chain with the gateway's own metered total
+//   GET  /v1/attestation               fresh, verified NEAR AI Cloud TEE attestation (see nearai.js)
 //   GET  /v1/health                    config + whether a signing key is loaded
 //
 // The browser never tells the gateway how much to charge: cost is metered here, per token.
 // Prompts and replies are not stored; only per-session token counts and cost (.data/metering.json).
+// With NEARAI_API_KEY set, prompts go to NEAR AI Cloud only after its TEE attestation verifies.
 //
-// KNOWN LIMIT (prototype): requests name their account_id without proving it. A production gateway
-// must authenticate the caller (e.g. a NEP-413 signed message per session). See docs/SECURITY_REPORT.md.
+// Callers are authenticated per session: each chat/settle request is signed by the session's chat key,
+// whose public key the owner registered on-chain in open_session (auth.js).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { clientKeyFromOpenTx, verifyRequest } from './auth.js'
 import { createGateway, readConfig, receiptHash } from './settlement.js'
-import { MODEL_ID, answerFor, proofFor } from './model.js'
+import { MOCK_MODEL_ID, answerFor, paymentPlaceholder } from './model.js'
+import { NEARAI_MODEL, attest, fetchSignature, streamChat, verifySignature } from './nearai.js'
+
+const NEARAI_API_KEY = process.env.NEARAI_API_KEY || ''
+const LIVE_MODEL = !!NEARAI_API_KEY
+const MODEL_ID = LIVE_MODEL ? NEARAI_MODEL : MOCK_MODEL_ID
 
 /** Same price as the UI shows: 0.00002 NEAR per token. */
 export const YOCTO_PER_TOKEN = 20_000_000_000_000_000_000n
@@ -38,6 +46,22 @@ const persist = () => {
   writeFileSync(DATA, JSON.stringify(metering, null, 2))
 }
 
+/** sessionId -> chat public key (hex), read once from the open_session transaction. Public data only. */
+const KEYS = join(here, '..', '.data', 'session-keys.json')
+let sessionKeys = {}
+try {
+  sessionKeys = JSON.parse(readFileSync(KEYS, 'utf8'))
+} catch {
+  sessionKeys = {}
+}
+const persistKeys = () => {
+  mkdirSync(dirname(KEYS), { recursive: true })
+  writeFileSync(KEYS, JSON.stringify(sessionKeys, null, 2))
+}
+const seenSignatures = new Map()
+/** Set REQUIRE_AUTH=0 only for local experiments: anyone could then spend or settle any session. */
+const REQUIRE_AUTH = process.env.REQUIRE_AUTH !== '0'
+
 const cfg = readConfig()
 const gw = createGateway(cfg)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -49,7 +73,7 @@ function send(res, status, body, origin) {
 
 function cors(origin) {
   return origin && ORIGINS.includes(origin)
-    ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' }
+    ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Nexora-Ts, X-Nexora-Sig, X-Nexora-Open-Tx', Vary: 'Origin' }
     : {}
 }
 
@@ -59,26 +83,78 @@ async function readJson(req) {
     raw += chunk
     if (raw.length > 64_000) throw new Error('Request too large')
   }
+  req.rawBody = raw // the signature covers these exact bytes
   return raw ? JSON.parse(raw) : {}
 }
 
 const nowNs = () => BigInt(Date.now()) * 1_000_000n
 
-/** Load and check a session against the chain. Throws {status, code, error}. */
-async function liveSession(sessionId, accountId) {
+/**
+ * Load a session from the chain and check the caller: right owner, and the request is signed by the
+ * chat key registered in the session's open_session transaction (see auth.js). Throws {status, code, error}.
+ */
+async function liveSession(sessionId, accountId, req) {
   if (!/^\d+$/.test(String(sessionId))) throw { status: 400, code: 'SESSION_CLOSED', error: 'Invalid session id' }
   const s = await gw.getSession(sessionId)
   if (!s) throw { status: 404, code: 'SESSION_CLOSED', error: 'This session is closed. Open a new one to keep chatting.' }
   if (s.owner !== accountId) throw { status: 403, code: 'SESSION_CLOSED', error: 'This session belongs to another account.' }
+  if (!REQUIRE_AUTH) return s
+  try {
+    let pub = sessionKeys[sessionId]
+    if (!pub) {
+      pub = await clientKeyFromOpenTx({ rpcUrl: cfg.rpcUrl, contractId: cfg.contractId, txHash: req.headers['x-nexora-open-tx'], owner: s.owner, sessionId })
+      sessionKeys[sessionId] = pub
+      persistKeys()
+    }
+    const path = new URL(req.url ?? '/', 'http://gateway').pathname
+    verifyRequest({ publicKeyHex: pub, method: req.method, path, sessionId: String(sessionId), ts: req.headers['x-nexora-ts'], sigHex: req.headers['x-nexora-sig'], body: req.rawBody ?? '', seen: seenSignatures })
+  } catch (e) {
+    throw { status: 401, code: 'SESSION_CLOSED', error: `Not authorised for this session: ${e.message}` }
+  }
   return s
 }
 
+/** Attestation cache: one verified report per model, refreshed every ATTEST_TTL_MS. */
+const ATTEST_TTL_MS = Number(process.env.ATTEST_TTL_MS || 10 * 60_000)
+let attestCache = null
+let attestPending = null
+async function currentAttestation() {
+  if (attestCache && Date.now() - attestCache.at < ATTEST_TTL_MS) return attestCache.value
+  attestPending ??= attest(NEARAI_MODEL)
+    .then((value) => {
+      // Only cache a passing report, so a transient verifier failure is retried next request.
+      if (value.verified) attestCache = { at: Date.now(), value }
+      return value
+    })
+    .finally(() => (attestPending = null))
+  return attestPending
+}
+
+const SYSTEM_PROMPT = 'You are Nexora, a private assistant. Answer clearly and concisely.'
+
+/** Last few turns from the browser's local transcript, bounded. */
+function cleanHistory(history) {
+  if (!Array.isArray(history)) return []
+  const out = []
+  let budget = 24_000
+  for (const h of history.slice(-12).reverse()) {
+    if (!h || (h.role !== 'user' && h.role !== 'assistant') || typeof h.content !== 'string' || !h.content) continue
+    const content = h.content.slice(0, 8000)
+    budget -= content.length
+    if (budget < 0) break
+    out.unshift({ role: h.role, content })
+  }
+  return out
+}
+
+const estTokens = (text) => BigInt(Math.ceil(text.length / 4))
+
 async function handleChat(req, res, origin) {
-  const { session_id, account_id, mode, prompt } = await readJson(req)
+  const { session_id, account_id, mode, prompt, history } = await readJson(req)
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(res, 400, { error: 'Prompt must be 1–8000 characters' }, origin)
   let s
   try {
-    s = await liveSession(session_id, account_id)
+    s = await liveSession(session_id, account_id, req)
   } catch (e) {
     return send(res, e.status ?? 502, { code: e.code ?? 'GATEWAY_DOWN', error: e.error ?? String(e.message ?? e) }, origin)
   }
@@ -86,50 +162,150 @@ async function handleChat(req, res, origin) {
 
   const m = (metering[session_id] ??= { metered: '0', tokens: 0, mode: mode === 'A' ? 'A' : 'B', requests: 0 })
   const cap = BigInt(s.cap)
-  if (BigInt(m.metered) >= cap) return send(res, 409, { code: 'CAP_REACHED', error: 'This session reached its spending cap. End it and open a new one to continue.' }, origin)
+  const start = BigInt(m.metered)
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...cleanHistory(history), { role: 'user', content: prompt }]
+  const promptTokens = estTokens(messages.map((x) => x.content).join('\n'))
+  // How many output tokens the rest of the cap still pays for.
+  const room = (cap - start) / YOCTO_PER_TOKEN - promptTokens
+  if (room <= 0n) return send(res, 409, { code: 'CAP_REACHED', error: 'This session reached its spending cap. End it and open a new one to continue.' }, origin)
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', ...cors(origin) })
   const emit = (ev) => res.write(`${JSON.stringify(ev)}\n`)
+  const upstream = new AbortController()
   let closed = false
-  req.on('close', () => (closed = true))
-
-  const promptTokens = BigInt(Math.ceil(prompt.length / 4))
-  const start = BigInt(m.metered)
-  let tokens = 0n
-  let capHit = false
-  await sleep(400)
-  for (const part of answerFor(prompt, m.mode).split(/(\s+)/)) {
-    if (closed) break
-    if (part.trim()) tokens++
-    if (start + (promptTokens + tokens) * YOCTO_PER_TOKEN > cap) {
-      capHit = true
-      break
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      closed = true
+      upstream.abort()
     }
-    emit({ type: 'token', text: part })
-    if (part.trim()) await sleep(20 + Math.random() * 35)
+  })
+
+  // Mode B: verify the enclave BEFORE the prompt leaves the gateway.
+  let attestation = null
+  if (m.mode === 'B') {
+    try {
+      attestation = await currentAttestation()
+    } catch (e) {
+      console.warn(`attestation failed: ${e.message}`)
+    }
+    if (LIVE_MODEL && !attestation?.verified) {
+      emit({ type: 'error', code: 'GATEWAY_DOWN', message: 'NEAR AI Cloud attestation could not be verified, so your prompt was not sent. Nothing was charged.' })
+      return res.end()
+    }
   }
-  // Charge what was actually generated, never above the cap.
-  let cost = (promptTokens + tokens) * YOCTO_PER_TOKEN
+
+  let outTokens = 0n
+  let text = ''
+  let capHit = false
+  let end = null
+  let failed = null
+  const overCap = () => start + (promptTokens + outTokens) * YOCTO_PER_TOKEN > cap
+  try {
+    if (LIVE_MODEL) {
+      const maxTokens = Number(room < 1024n ? room : 1024n)
+      for await (const ev of streamChat({ apiKey: NEARAI_API_KEY, messages, maxTokens, signal: upstream.signal })) {
+        if (ev.type === 'end') {
+          end = ev
+          break
+        }
+        text += ev.text
+        outTokens = estTokens(text)
+        if (overCap()) {
+          capHit = true
+          upstream.abort()
+          break
+        }
+        if (!closed) emit({ type: 'token', text: ev.text })
+      }
+    } else {
+      await sleep(300)
+      for (const part of answerFor(prompt).split(/(\s+)/)) {
+        if (closed) break
+        if (part.trim()) outTokens++
+        if (overCap()) {
+          capHit = true
+          break
+        }
+        emit({ type: 'token', text: part })
+        if (part.trim()) await sleep(15 + Math.random() * 25)
+      }
+    }
+  } catch (e) {
+    if (!closed && !capHit) failed = e
+  }
+
+  // Charge what was used (the provider's own count when it reports one), never above the cap.
+  const used = end?.usage?.total_tokens ? BigInt(end.usage.total_tokens) : promptTokens + outTokens
+  let cost = used * YOCTO_PER_TOKEN
+  if (failed && outTokens === 0n) cost = 0n // nothing delivered, nothing charged
   if (start + cost > cap) cost = cap - start
   m.metered = (start + cost).toString()
-  m.tokens += Number(promptTokens + tokens)
+  m.tokens += Number(cost / YOCTO_PER_TOKEN)
   m.requests += 1
   persist()
 
-  if (capHit) emit({ type: 'error', code: 'CAP_REACHED', message: 'This session reached its spending cap. End it and open a new one to continue.' })
-  else {
-    emit({ type: 'usage', tokens: Number(promptTokens + tokens), cost: cost.toString(), metered: m.metered })
-    emit({ type: 'proof', proof: proofFor(session_id, m.mode, m.requests) })
-    emit({ type: 'done' })
+  if (closed) return res.end()
+  if (failed) {
+    console.warn(`chat #${session_id} failed: ${failed.message}`)
+    emit({ type: 'error', code: 'GATEWAY_DOWN', message: `The model provider failed (${failed.message}). ${cost > 0n ? 'You were charged only for what was delivered.' : 'Nothing was charged.'}` })
+    return res.end()
   }
+  if (capHit) {
+    emit({ type: 'error', code: 'CAP_REACHED', message: 'This session reached its spending cap. End it and open a new one to continue.' })
+    return res.end()
+  }
+  emit({ type: 'usage', tokens: Number(cost / YOCTO_PER_TOKEN), cost: cost.toString(), metered: m.metered })
+
+  if (m.mode === 'A') emit({ type: 'proof', proof: paymentPlaceholder(session_id, m.requests) })
+  else if (attestation) emit({ type: 'proof', proof: await responseProof(attestation, end) })
+  emit({ type: 'done' })
   res.end()
+}
+
+/** The attestation plus, for a real reply, the provider's signature over this exact request and response. */
+async function responseProof(attestation, end) {
+  const proof = { ...attestation, raw: { ...attestation.raw, simulated_reply: !LIVE_MODEL } }
+  if (!LIVE_MODEL) {
+    proof.checks = [...attestation.checks, { name: 'Reply signed by this model', ok: false, detail: 'No NEAR AI Cloud API key on the gateway: this reply was simulated. The attestation above is real, for the model that would answer.' }]
+    proof.verified = false
+    return proof
+  }
+  try {
+    if (!end?.id) throw new Error('the provider returned no completion id')
+    const sig = await fetchSignatureRetry(end.id)
+    const sigChecks = verifySignature(sig, {
+      modelAddress: attestation.signing_key,
+      gatewayAddress: attestation.raw.gateway_signing_address,
+      requestBody: end.requestBody,
+      responseBody: end.responseBody,
+    })
+    proof.checks = [...attestation.checks, ...sigChecks]
+    proof.response_signature = { chat_id: end.id, kind: sig.signature_kind ?? null, text: sig.text, signature: sig.signature, signing_address: sig.signing_address }
+  } catch (e) {
+    proof.checks = [...attestation.checks, { name: 'Reply signed by this model', ok: false, detail: `Signature not available: ${e.message}` }]
+  }
+  proof.verified = proof.checks.every((c) => c.ok)
+  return proof
+}
+
+async function fetchSignatureRetry(chatId) {
+  let last
+  for (let i = 0; i < 4; i++) {
+    try {
+      return await fetchSignature(chatId, NEARAI_MODEL, NEARAI_API_KEY)
+    } catch (e) {
+      last = e
+      await sleep(500 * (i + 1))
+    }
+  }
+  throw last
 }
 
 async function handleSettle(req, res, origin, sessionId) {
   const { account_id } = await readJson(req)
   let s
   try {
-    s = await liveSession(sessionId, account_id)
+    s = await liveSession(sessionId, account_id, req)
   } catch (e) {
     return send(res, e.status ?? 502, { error: e.error ?? String(e.message ?? e) }, origin)
   }
@@ -138,11 +314,24 @@ async function handleSettle(req, res, origin, sessionId) {
   const spent = BigInt(m.metered) > BigInt(s.cap) ? BigInt(s.cap) : BigInt(m.metered)
   const record = { session_id: String(sessionId), account_id, spent_yocto: spent.toString(), tokens: m.tokens, requests: m.requests, model: MODEL_ID, settled_at: new Date().toISOString() }
   try {
-    const result = await gw.settleExact(sessionId, spent.toString(), receiptHash(record))
+    record.receipt_hash = receiptHash(record)
+    const result = await gw.settleExact(sessionId, spent.toString(), record.receipt_hash)
     delete metering[sessionId]
     persist()
-    const receipts = await gw.getReceipts(account_id)
-    const receipt = receipts.find((r) => r.session_id === String(sessionId))
+    delete sessionKeys[sessionId]
+    persistKeys()
+    const hash = record.receipt_hash
+    // The settle tx is final; reads can lag a block, so fall back to the values we just settled.
+    const receipts = await gw.getReceipts(account_id).catch(() => [])
+    const receipt = receipts.find((r) => r.session_id === String(sessionId)) ?? {
+      session_id: String(sessionId),
+      cap: s.cap,
+      spent: spent.toString(),
+      refunded: (BigInt(s.cap) - spent).toString(),
+      receipt_hash: hash,
+      closed_at: nowNs().toString(),
+      outcome: 'Settled',
+    }
     console.log(`settled #${sessionId} for ${account_id}: ${spent} yocto (tx ${result.tx})`)
     return send(res, 200, { receipt, tx: result.tx }, origin)
   } catch (e) {
@@ -159,11 +348,12 @@ const server = createServer(async (req, res) => {
       return res.end()
     }
     if (req.method === 'GET' && url.pathname === '/v1/health')
-      return send(res, 200, { ok: true, contract: cfg.contractId, gateway: cfg.gatewayId ?? null, can_settle: !!(cfg.gatewayId && cfg.privateKey), model: MODEL_ID }, origin)
+      return send(res, 200, { ok: true, contract: cfg.contractId, gateway: cfg.gatewayId ?? null, can_settle: !!(cfg.gatewayId && cfg.privateKey), model: MODEL_ID, model_live: LIVE_MODEL, attested_model: NEARAI_MODEL, attestation_verified: attestCache ? attestCache.value.verified : null }, origin)
     if (req.method === 'GET' && url.pathname === '/v1/metering') {
       const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean)
       return send(res, 200, Object.fromEntries(ids.map((id) => [id, metering[id]?.metered ?? '0'])), origin)
     }
+    if (req.method === 'GET' && url.pathname === '/v1/attestation') return send(res, 200, await currentAttestation(), origin)
     if (req.method === 'POST' && url.pathname === '/v1/chat') return await handleChat(req, res, origin)
     const settle = url.pathname.match(/^\/v1\/sessions\/(\d+)\/settle$/)
     if (req.method === 'POST' && settle) return await handleSettle(req, res, origin, settle[1])
@@ -178,5 +368,5 @@ server.listen(PORT, () => {
   console.log(`Nexora gateway on http://localhost:${PORT}`)
   console.log(`  contract ${cfg.contractId} via ${cfg.rpcUrl}`)
   console.log(`  settles as ${cfg.gatewayId ?? '(no GATEWAY_ACCOUNT_ID)'}${cfg.privateKey ? '' : '  (no GATEWAY_PRIVATE_KEY: chat works, settling will fail)'}`)
-  console.log(`  model ${MODEL_ID}`)
+  console.log(`  model ${MODEL_ID}${LIVE_MODEL ? '' : `  (set NEARAI_API_KEY for real replies; attestation of ${NEARAI_MODEL} is still real)`}`)
 })

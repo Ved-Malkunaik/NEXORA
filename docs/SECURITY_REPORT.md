@@ -65,6 +65,36 @@ checklist from the build plan.
 
 No High findings are open.
 
+## Gateway and app (Level 3)
+
+Scope: [`gateway/src`](../gateway/src) and [`src/client`](../src/client). Method: manual review plus
+unit tests (`cd gateway && npm test`, 13 tests) and a scripted testnet run (`gateway/scripts/smoke.mjs`).
+
+### What is enforced
+
+| Property | How | Evidence |
+|---|---|---|
+| Only the session owner can spend or settle a session through the gateway | The browser generates an ed25519 chat key per session and registers its public key on-chain as an extra `client_key` argument of `open_session` (the contract ignores unknown args, so no contract change). The gateway reads that transaction once, checks signer, receiver, method and returned session id, then requires every `/v1/chat` and `/settle` request to be signed by that key | `gateway/src/auth.js`, `test/auth.test.js`. Smoke test: unsigned → 401, forged → 401 |
+| Requests cannot be replayed or altered | The signature covers method, path, session id, a timestamp (±2 min) and the sha256 of the exact body. Each signature is accepted once | `test/auth.test.js`. Smoke test: replay → 401 |
+| The browser cannot choose what it is charged | Cost is metered on the gateway per token and capped at the on-chain cap. With a real model, the provider's own token count is used | `handleChat` in `server.js` |
+| Mode B: the prompt is only sent to a verified enclave | Before forwarding, the gateway fetches a NEAR AI Cloud attestation with a fresh nonce and checks: nonce echoed, signing address + nonce bound in the TDX quote's `report_data`, MRTD equals the published `tcb_info`, MRCONFIGID equals `01 ‖ sha256(app_compose)`, Intel DCAP verification of the quote, NVIDIA NRAS verification of the GPU evidence. If any check fails with a real model configured, the prompt is not sent and nothing is charged | `gateway/src/nearai.js`, `test/nearai.test.js`. All six checks pass against the live service |
+| Mode B: the answer came from that enclave | After each real reply the gateway fetches the provider's ECDSA signature for the completion and checks it recovers to the attested signing address and covers sha256 of the exact request and response bytes | `verifySignature` in `nearai.js`, unit-tested. **Not yet exercised against the live service: it needs an API key** |
+| No chat content at rest on the gateway | Only token counts, cost and public chat keys are written (`gateway/.data/`). The transcript lives in the browser's localStorage | `server.js` |
+| Secrets stay out of the repo and the browser | `gateway/.env` is git-ignored. The gateway key is a function-call key limited to `settle_session`. The NEAR AI Cloud key never reaches the browser | `.gitignore`, `gateway/.env.example` |
+
+### Findings
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| G-1 | Medium | **The gateway operator sees prompts in plaintext** (and so does anyone who compromises the gateway host). The TEE protects the prompt from the model provider, not from us. | Disclosed in the app and README. Fix: end-to-end encrypt to the enclave's attested `signing_public_key` in the browser |
+| G-2 | Medium | **Attestation is verified by the gateway, not by the browser.** A user must trust the gateway's "Verified" badge, or re-check the raw quote shown in the panel themselves. Two checks rely on third-party services (a DCAP verifier hosted by Phala, NVIDIA NRAS). The RTMR3 event-log replay from NEAR's verification guide is not done. | Accepted. The raw quote, nonce and signing address are shown so anyone can re-verify. Fix: verify DCAP in the browser (wasm `dcap-qvl`) |
+| G-3 | Medium | **Mode A (zkAPI) is not implemented.** Mode A sessions are paid from an on-chain session linked to the account, exactly like Mode B. | The UI, the proof panel and the landing page say "preview" and "payer not hidden". No anonymity claim is made |
+| G-4 | Low | **The chat key lives in localStorage.** XSS in the app could sign requests for open sessions. Damage is bounded by each session's cap and expiry; it cannot withdraw or open sessions. | Accepted. The key is deleted when the session closes |
+| G-5 | Low | **`GET /v1/metering` and `/v1/attestation` are unauthenticated.** Metering reveals the metered spend of a session id to anyone who can reach the gateway (the same data becomes public at settlement). No rate limiting anywhere. | Accepted for the prototype. Put the gateway behind a rate-limiting proxy before production |
+| G-6 | Low | **Metering state is a local JSON file.** If it is lost before settlement, the session settles at 0 (the user is undercharged, never overcharged). | Accepted |
+| G-7 | Info | Sessions opened without a chat key (from the CLI, or by an older build) cannot be used through the gateway; they can be reclaimed after the deadline, or settled by the operator with `npm run settle`. | By design |
+| G-8 | Info | Intents funding shows real 1Click dry-run prices but does not execute swaps. | Stated on the Funding page |
+
 ## Reproduce
 
 ```bash

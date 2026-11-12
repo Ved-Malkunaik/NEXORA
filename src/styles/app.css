@@ -509,3 +509,25 @@
     font-size: 10px;
   }
 }
+.proof .checks {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.proof .checks li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+.check-ok {
+  color: var(--ok);
+  font-weight: 700;
+}
+.check-fail {
+  color: var(--err);
+  font-weight: 700;
+}

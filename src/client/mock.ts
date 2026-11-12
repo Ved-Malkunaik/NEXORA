@@ -458,13 +458,13 @@ export class MockClient implements NexoraClient {
     }
     const p: PaymentProof = {
       kind: 'zk',
-      scheme: 'zkAPI (Groth16)',
+      scheme: 'zkAPI (not integrated: preview only)',
       nullifier: mockHex(`nullifier:${s.session_id}:${n}`),
-      proof_bytes: 192,
+      proof_bytes: 0,
       key_reuse_window_s: 0,
-      verified: true,
+      verified: false,
       issued_at: this.now(),
-      raw: { mock: true, note: 'A fresh key per request: the provider cannot link requests' },
+      raw: { mock: true, note: 'Demo account. zkAPI is not integrated yet: a real Mode A request is paid from an on-chain session linked to your account.' },
     }
     return p
   }
@@ -491,6 +491,7 @@ export class MockClient implements NexoraClient {
       fee: fee.toString(),
       expires_at: Date.now() + 30_000,
       dry: true,
+      source: 'mock',
     }
     this.quotes[q.quote_id] = q
     return q

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useClient, useClientQuery, useNow } from '../client/context'
-import { GATEWAY_URL } from '../client/live'
+import { GATEWAY_URL, fetchGatewayHealth, type GatewayHealth } from '../client/live'
 import type { ChatMessage, PrivacyMode, Proof, SessionInfo } from '../client/types'
 import { MODE_INFO, OpenSessionModal, SessionCard, prefs, sessionPhase } from '../components/actions'
 import { PageHeader, RequireWallet } from '../components/Layouts'
@@ -354,6 +354,21 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
               </span>
             </li>
           </ul>
+          {p.checks && p.checks.length > 0 && (
+            <ul className="checks small">
+              {p.checks.map((c) => (
+                <li key={c.name} title={c.detail}>
+                  <span className={c.ok ? 'check-ok' : 'check-fail'} aria-label={c.ok ? 'passed' : 'failed'}>
+                    {c.ok ? '✓' : '✕'}
+                  </span>
+                  <span>
+                    {c.name}
+                    <span className="muted"> · {c.detail}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
           <details className="raw">
             <summary className="small">Raw attestation</summary>
             <pre>{JSON.stringify(p, null, 2)}</pre>
@@ -384,7 +399,13 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
               <span>{p.key_reuse_window_s}s · a fresh key for every request</span>
             </li>
           </ul>
-          <p className="small muted">The provider sees that a valid credit paid for this request, not which account it came from. Your IP address and prompt are not hidden in this mode.</p>
+          {p.verified ? (
+            <p className="small muted">The provider sees that a valid credit paid for this request, not which account it came from. Your IP address and prompt are not hidden in this mode.</p>
+          ) : (
+            <p className="callout small">
+              <strong>Payer not hidden yet.</strong> {typeof p.raw?.note === 'string' ? p.raw.note : 'No zero-knowledge proof was produced for this request.'}
+            </p>
+          )}
           <details className="raw">
             <summary className="small">Raw proof</summary>
             <pre>{JSON.stringify(p, null, 2)}</pre>
@@ -403,11 +424,21 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
 /** Live mode: be explicit about what is real (credits, metering, settlement) and what is not yet (model replies). */
 function LiveNotice() {
   const client = useClient()
+  const health = useClientQuery<GatewayHealth>(() => fetchGatewayHealth(), [])
   if (client.kind !== 'live') return null
+  const h = health.data
   return (
     <p className="callout small" style={{ marginBottom: 14 }}>
-      <strong>Live on testnet.</strong> Sessions, metering and settlement are real transactions on the credits contract, through the gateway at{' '}
-      <code>{GATEWAY_URL}</code>. Model replies are simulated until the NEAR AI Cloud key is configured on the gateway.
+      <strong>Live.</strong> Sessions, metering and settlement are real transactions on the credits contract, through the gateway at{' '}
+      <code>{GATEWAY_URL}</code>.{' '}
+      {health.error
+        ? 'The gateway is not reachable right now.'
+        : !h
+          ? ''
+          : h.model_live
+            ? `Mode B replies come from ${h.model} inside a TEE on NEAR AI Cloud; the gateway verifies the attestation before sending your prompt.`
+            : `Mode B attestation of ${h.attested_model ?? 'the model'} is real, but replies are simulated: the gateway has no NEAR AI Cloud API key.`}{' '}
+      Mode A (zkAPI) is a preview: payment is still linked to your account.
     </p>
   )
 }

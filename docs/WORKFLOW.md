@@ -22,10 +22,14 @@ the real cost, and the user can always reclaim unspent credits.
    0.05 NEAR storage reserve, refundable through `unregister()`.
 3. **Open a session.** The app calls `open_session(cap, ttl_seconds)` with the session key,
    so there is no wallet popup. `cap` moves from `available` to `locked`, and the call
-   returns a session id.
-4. **Chat.** The browser sends prompts to the gateway along with the session id. The gateway
-   checks the session on-chain (`get_session`) and forwards to NEAR AI Cloud. The UI
-   shows the TEE attestation. The gateway meters cost and stops at the cap.
+   returns a session id. The same call carries a `client_key`: the public half of a fresh
+   chat key that stays in the browser.
+4. **Chat.** The browser signs each request with the chat key and sends it to the gateway.
+   The gateway checks the session on-chain (`get_session`), checks the signature against the
+   `client_key` in the session's `open_session` transaction, verifies NEAR AI Cloud's TEE
+   attestation (Intel TDX quote + NVIDIA GPU evidence, fresh nonce), and only then forwards
+   the prompt. After the reply it checks the enclave's signature over the exact request and
+   response. The UI lists every check. The gateway meters cost and stops at the cap.
 5. **Settle.** When the chat ends, the gateway calls
    `settle_session(id, spent, receipt_hash)` with `spent <= cap`. `spent` goes to the
    operator's fee pool, the rest is refunded to `available`, and a receipt (hash only,
@@ -58,12 +62,11 @@ session is deleted from state, so it cannot be settled or reclaimed again.
 Every prompt passes through our gateway, so **the gateway operator sees plaintext**, even
 though the model runs in a TEE.
 
-- **(a) Gateway proxy, disclosed as a trusted operator.** This is the default we are
-  building. The README states it plainly.
-- **(b) The browser talks to NEAR AI Cloud directly.** Only possible if NEAR AI Cloud
-  issues scoped or limited keys; that check is still open.
-
-Recommendation: (a) unless (b) turns out to be easy. **Status: pending your confirmation.**
+- **(a) Gateway proxy, disclosed as a trusted operator.** This is what is built. The app
+  and README state it plainly.
+- **(b) The browser encrypts to the enclave.** NEAR AI Cloud attestations include a
+  `signing_public_key` for end-to-end encryption, which would hide prompts from the gateway
+  too. Not built yet (security report, G-1).
 
 ## Privacy tradeoffs (for the README)
 
@@ -71,5 +74,7 @@ Recommendation: (a) unless (b) turns out to be easy. **Status: pending your conf
   We store only a receipt hash, never prompt or answer content.
 - Deposits and withdrawals are public on-chain.
 - Mode B hides the prompt from the model provider but not from the gateway, under option (a).
-- Mode A (zkAPI) hides who pays from the provider, but not the user's IP address or the
-  prompt contents. Its key-reuse window must be set to 0.
+- Mode A (zkAPI) is **not implemented**. It is a labelled preview: a Mode A session is paid
+  from an on-chain session linked to your account, so the payer is not hidden. When built,
+  it would hide who pays from the provider, but not the user's IP address or the prompt
+  contents, and its key-reuse window must be 0.

@@ -48,6 +48,7 @@ export function createGateway(cfg = readConfig()) {
       contractId: cfg.contractId,
       method: 'get_session',
       args: { session_id: String(sessionId) },
+      blockQuery: { finality: 'optimistic' },
     })
   }
 
@@ -80,7 +81,7 @@ export function createGateway(cfg = readConfig()) {
   }
 
   async function getReceipts(accountId) {
-    return provider.callFunction({ contractId: cfg.contractId, method: 'get_receipts', args: { account_id: accountId } })
+    return provider.callFunction({ contractId: cfg.contractId, method: 'get_receipts', args: { account_id: accountId }, blockQuery: { finality: 'optimistic' } })
   }
 
   /** Settle with an exact yocto amount and receipt hash (used by the server). Returns the tx hash. */

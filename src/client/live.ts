@@ -10,7 +10,8 @@
 import { actionCreators, type WalletSelector } from '@near-wallet-selector/core'
 import type { NetworkConfig } from '../config/networks'
 import { viewFunction } from '../lib/rpc'
-import { MockClient } from './mock'
+import { authHeaders, clientKeyArg, newChatKey, type ChatKey } from './chatKey'
+import { INTENTS_ASSETS, oneClickQuote } from './intents'
 import type {
   ChatEvent,
   ChatMessage,
@@ -67,15 +68,12 @@ export class LiveClient implements NexoraClient {
   readonly kind = 'live' as const
   private version = 0
   private listeners = new Set<() => void>()
-  /** Intents has no testnet; quotes are dry-run previews from the mock until mainnet wiring. */
-  private quotes: MockClient
   private readonly cfg: NetworkConfig
   private readonly selector: WalletSelector
 
   constructor(cfg: NetworkConfig, selector: WalletSelector) {
     this.cfg = cfg
     this.selector = selector
-    this.quotes = new MockClient(`${cfg.networkId}-quotes`)
   }
 
   // ---------- plumbing ----------
@@ -97,6 +95,11 @@ export class LiveClient implements NexoraClient {
   }
 
   private async call(method: string, args: object, deposit: bigint, gasTgas = 30n): Promise<unknown> {
+    return (await this.callTx(method, args, deposit, gasTgas)).value
+  }
+
+  /** Like call(), but also returns the transaction hash. */
+  private async callTx(method: string, args: object, deposit: bigint, gasTgas = 30n): Promise<{ value: unknown; tx: string | undefined }> {
     const wallet = await this.selector.wallet()
     try {
       const outcome = (await wallet.signAndSendTransaction({
@@ -105,7 +108,7 @@ export class LiveClient implements NexoraClient {
       })) as Outcome | void
       const value = outcomeValue(outcome)
       this.bump()
-      return value
+      return { value, tx: outcome?.transaction?.hash ?? outcome?.transaction_outcome?.id }
     } catch (e) {
       this.bump()
       throw new Error(describeError(e))
@@ -126,6 +129,18 @@ export class LiveClient implements NexoraClient {
     } catch {
       /* storage unavailable */
     }
+  }
+
+  /** The chat key for a session (see chatKey.ts), plus the open_session tx that registered it. */
+  private chatKey(sessionId: string) {
+    return this.local<(ChatKey & { tx?: string }) | null>(`chatkey:${sessionId}`, null)
+  }
+
+  /** Signed headers for a session request, or an error the user can act on. */
+  private signed(sessionId: string, method: string, path: string, body: string): Record<string, string> {
+    const k = this.chatKey(sessionId)
+    if (!k) throw new Error('This browser does not hold the chat key for this session (it was opened elsewhere or before this version). End it from the browser that opened it, or reclaim it after the deadline.')
+    return authHeaders(k, method, path, sessionId, body, k.tx)
   }
 
   private async gateway<T>(path: string, init?: RequestInit): Promise<T> {
@@ -185,7 +200,11 @@ export class LiveClient implements NexoraClient {
   }
 
   async openSession(accountId: string, cap: Yocto, ttlSeconds: number, mode: PrivacyMode): Promise<SessionInfo> {
-    const id = (await this.call('open_session', { cap, ttl_seconds: String(ttlSeconds) }, 0n)) as string
+    // The chat key's public half goes on-chain in this call; the gateway checks requests against it.
+    const key = newChatKey()
+    const { value, tx } = await this.callTx('open_session', { cap, ttl_seconds: String(ttlSeconds), client_key: clientKeyArg(key) }, 0n)
+    const id = value as string
+    this.setLocal(`chatkey:${id}`, { ...key, tx })
     const modes = this.local<Record<string, PrivacyMode>>('modes', {})
     modes[id] = mode
     this.setLocal('modes', modes)
@@ -195,18 +214,28 @@ export class LiveClient implements NexoraClient {
   }
 
   async closeSession(accountId: string, sessionId: string): Promise<Receipt> {
-    const r = await this.gateway<{ receipt: Receipt; tx: string }>(`/v1/sessions/${sessionId}/settle`, {
-      method: 'POST',
-      body: JSON.stringify({ account_id: accountId }),
-    })
+    const path = `/v1/sessions/${sessionId}/settle`
+    const body = JSON.stringify({ account_id: accountId })
+    const r = await this.gateway<{ receipt: Receipt; tx: string }>(path, { method: 'POST', body, headers: this.signed(sessionId, 'POST', path, body) })
+    this.forget(sessionId)
     this.bump()
     return r.receipt
   }
 
   async reclaimSession(accountId: string, sessionId: string): Promise<Receipt> {
     await this.call('reclaim_session', { session_id: sessionId }, 0n)
+    this.forget(sessionId)
     const receipts = await this.getReceipts(accountId)
     return receipts.find((r) => r.session_id === sessionId) ?? receipts[receipts.length - 1]
+  }
+
+  /** A closed session's chat key is useless; drop it. The transcript stays until the user clears it. */
+  private forget(sessionId: string) {
+    try {
+      localStorage.removeItem(`nexora:live:${this.cfg.contractId}:chatkey:${sessionId}`)
+    } catch {
+      /* storage unavailable */
+    }
   }
 
   // ---------- chat (gateway) ----------
@@ -227,14 +256,26 @@ export class LiveClient implements NexoraClient {
     const save = () => this.setLocal(`chat:${sessionId}`, [...history, user, reply])
     save()
 
+    // Recent turns go along so the model has context; nothing is stored on the gateway.
+    const body = JSON.stringify({
+      session_id: sessionId,
+      account_id: accountId,
+      mode,
+      prompt,
+      history: history.filter((m) => !m.error && m.content).slice(-12).map((m) => ({ role: m.role, content: m.content })),
+    })
+    let headers: Record<string, string>
+    try {
+      headers = this.signed(sessionId, 'POST', '/v1/chat', body)
+    } catch (e) {
+      reply.error = e instanceof Error ? e.message : String(e)
+      save()
+      yield { type: 'error', code: 'SESSION_CLOSED', message: reply.error }
+      return
+    }
     let res: Response
     try {
-      res = await fetch(`${GATEWAY_URL}/v1/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, account_id: accountId, mode, prompt }),
-        signal,
-      })
+      res = await fetch(`${GATEWAY_URL}/v1/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body, signal })
     } catch {
       reply.error = 'Gateway not reachable'
       save()
@@ -287,12 +328,33 @@ export class LiveClient implements NexoraClient {
   // ---------- funding ----------
 
   getAssets() {
-    return this.quotes.getAssets()
+    return INTENTS_ASSETS
   }
+  /** Real dry-run price from the 1Click API (mainnet liquidity, also previewed on testnet). */
   getQuote(assetId: string, amountIn: string) {
-    return this.quotes.getQuote(assetId, amountIn)
+    const accountId = this.selector.store.getState().accounts[0]?.accountId ?? ''
+    return oneClickQuote(assetId, amountIn, accountId)
   }
   async fundWithQuote(): Promise<CreditBalance> {
-    throw new Error('NEAR Intents funding is mainnet only. On testnet, deposit NEAR directly.')
+    if (!this.cfg.intentsSupported) throw new Error('NEAR Intents funding is mainnet only. On testnet, deposit NEAR directly.')
+    throw new Error('Executing the swap is not wired in this build. Swap to wNEAR at near-intents.org, unwrap it, then use Deposit.')
   }
+}
+
+export interface GatewayHealth {
+  contract: string
+  gateway: string | null
+  can_settle: boolean
+  model: string
+  /** True when the gateway has a NEAR AI Cloud API key, so replies come from the real model. */
+  model_live?: boolean
+  attested_model?: string
+  attestation_verified?: boolean | null
+}
+
+export async function fetchGatewayHealth(): Promise<GatewayHealth> {
+  const r = await fetch(`${GATEWAY_URL}/v1/health`).catch(() => {
+    throw new Error('Not reachable. Start it with: cd gateway && npm start')
+  })
+  return r.json()
 }

@@ -1,6 +1,5 @@
-// Stand-in model until NEAR AI Cloud is wired (needs an API key). Same interface the real
-// provider will have: stream(prompt, mode) yields text chunks; proof(...) returns the proof.
-// Everything here is labelled mock so it is never mistaken for a real attestation.
+// Fallback replies for when NEARAI_API_KEY is not set, and the Mode A payment-proof placeholder.
+// Everything here is labelled so it is never mistaken for a real model answer or a real proof.
 import { createHash } from 'node:crypto'
 
 const ANSWERS = [
@@ -10,41 +9,34 @@ const ANSWERS = [
   [/tax|staking|reward/i, 'In many jurisdictions staking rewards are taxed as income when you gain control of them, valued at the market price on that day, and again as a capital gain or loss when you later sell. Keep a record of each reward with its date and value. Rules differ a lot by country, so treat this as orientation, not tax advice, and check with a local professional before filing.'],
 ]
 
-export const MODEL_ID = 'mock-model (NEAR AI Cloud pending)'
+export const MOCK_MODEL_ID = 'simulated (no NEARAI_API_KEY on the gateway)'
 
-export function answerFor(prompt, mode) {
+export function answerFor(prompt) {
   const hit = ANSWERS.find(([re]) => re.test(prompt))
-  if (hit) return hit[1]
-  return mode === 'B'
-    ? 'Your request reached the Nexora gateway and was metered against your on-chain session cap. Replies are simulated until the NEAR AI Cloud key is configured; then this prompt runs inside a TEE and the panel shows the real attestation.'
-    : 'Your request reached the Nexora gateway and was metered against your on-chain session cap. Replies are simulated until zkAPI is wired; then each request is paid with an anonymous credit.'
+  const body = hit
+    ? hit[1]
+    : 'Your request reached the Nexora gateway and was metered against your on-chain session cap.'
+  return `[Simulated reply: the gateway has no NEAR AI Cloud API key, so no model ran.] ${body}`
 }
 
 const hex = (s, bytes = 32) => createHash('sha256').update(s).digest('hex').slice(0, bytes * 2)
 
-export function proofFor(sessionId, mode, n) {
-  if (mode === 'B')
-    return {
-      kind: 'tee',
-      provider: 'NEAR AI Cloud',
-      model: MODEL_ID,
-      hardware: 'Intel TDX + NVIDIA H100 (confidential computing)',
-      measurement: hex(`mrtd:${sessionId}`, 48),
-      signing_key: `0x${hex(`signer:${sessionId}`, 20)}`,
-      nonce: hex(`nonce:${sessionId}:${n}`, 16),
-      issued_at: Date.now(),
-      verified: false,
-      verify_url: 'https://docs.near.ai/cloud/verification',
-      raw: { mock: true, note: 'Placeholder until the NEAR AI Cloud key is configured on the gateway.' },
-    }
+/**
+ * Mode A placeholder. zkAPI is not integrated in this build: the request is paid from an on-chain
+ * session that names your account, so the payer is NOT hidden. The proof says so.
+ */
+export function paymentPlaceholder(sessionId, n) {
   return {
     kind: 'zk',
-    scheme: 'zkAPI (Groth16)',
+    scheme: 'zkAPI (not integrated: preview only)',
     nullifier: hex(`nullifier:${sessionId}:${n}`),
-    proof_bytes: 192,
+    proof_bytes: 0,
     key_reuse_window_s: 0,
     verified: false,
     issued_at: Date.now(),
-    raw: { mock: true, note: 'Placeholder until zkAPI is wired.' },
+    raw: {
+      mock: true,
+      note: 'No zero-knowledge proof was produced. This request was paid from on-chain session ' + sessionId + ', which is linked to your account. Mode A does not hide the payer yet.',
+    },
   }
 }

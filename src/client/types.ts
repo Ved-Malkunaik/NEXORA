@@ -79,7 +79,17 @@ export interface TeeAttestation {
   issued_at: number
   verified: boolean
   verify_url: string
+  /** Each check the gateway ran; `verified` is true only when all pass. */
+  checks?: ProofCheck[]
+  /** The provider's signature over this exact request + response (real replies only). */
+  response_signature?: { chat_id: string; kind: string | null; text: string; signature: string; signing_address: string }
   raw: Record<string, unknown>
+}
+
+export interface ProofCheck {
+  name: string
+  ok: boolean
+  detail: string
 }
 
 /** Mode A: proof that the request was paid for without revealing the payer. */
@@ -122,6 +132,8 @@ export interface IntentsQuote {
   fee: Yocto
   expires_at: number
   dry: boolean
+  /** Where the price came from: the live 1Click API, a direct NEAR deposit, or the mock. */
+  source?: '1click' | 'direct' | 'mock'
 }
 
 export interface NexoraClient {

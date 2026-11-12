@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useClient, useClientQuery, useClientVersion, useMockControls, useNow } from '../client/context'
-import { GATEWAY_URL } from '../client/live'
+import { GATEWAY_URL, fetchGatewayHealth, type GatewayHealth } from '../client/live'
 import type { PrivacyMode } from '../client/types'
 import { MODE_INFO, TTL_OPTIONS, prefs } from '../components/actions'
 import { PageHeader } from '../components/Layouts'
@@ -254,25 +254,10 @@ function CloseAccount({ accountId }: { accountId: string }) {
   )
 }
 
-interface Health {
-  contract: string
-  gateway: string | null
-  can_settle: boolean
-  model: string
-}
-
 function GatewayCard() {
   const client = useClient()
   const [tick, setTick] = useState(0)
-  const health = useClientQuery<Health>(
-    async () => {
-      const r = await fetch(`${GATEWAY_URL}/v1/health`).catch(() => {
-        throw new Error('Not reachable. Start it with: cd gateway && npm start')
-      })
-      return r.json()
-    },
-    [tick],
-  )
+  const health = useClientQuery<GatewayHealth>(() => fetchGatewayHealth(), [tick])
   if (client.kind !== 'live') return null
   const h = health.data
   return (
@@ -302,8 +287,18 @@ function GatewayCard() {
             <span className="muted">Model</span>
             <span>{h.model}</span>
           </li>
+          {h.attested_model && (
+            <li>
+              <span className="muted">TEE attestation</span>
+              <span>
+                <span className="mono">{h.attested_model}</span> ·{' '}
+                {h.attestation_verified === true ? 'verified' : h.attestation_verified === false ? 'failed' : 'checked on first chat'}
+              </span>
+            </li>
+          )}
         </ul>
       )}
+      {h && h.model_live === false && <p className="small muted">Replies are simulated: set NEARAI_API_KEY in gateway/.env for real NEAR AI Cloud answers.</p>}
       {h && !h.can_settle && <p className="small error">Add GATEWAY_ACCOUNT_ID and GATEWAY_PRIVATE_KEY to gateway/.env and restart it.</p>}
       <button className="btn btn-sm" onClick={() => setTick((t) => t + 1)}>
         Check again
