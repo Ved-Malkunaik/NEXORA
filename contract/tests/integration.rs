@@ -5,7 +5,8 @@
 #![allow(clippy::future_not_send)]
 
 use near_api::signer::generate_secret_key;
-use near_api::types::{AccessKeyPermission, FunctionCallPermission};
+use near_api::types::AccessKeyPermission;
+use near_api::types::transaction::actions::FunctionCallPermission;
 use near_api::{AccountId, NearGas, NearToken, NetworkConfig, Signer};
 use near_sdk::serde_json::{Value, json};
 use std::sync::Arc;
