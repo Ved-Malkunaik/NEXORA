@@ -75,7 +75,9 @@ const usage = events.find((e) => e.type === 'usage')
 const proof = events.find((e) => e.type === 'proof')?.proof
 check('signed chat streams a reply', r.status === 200 && text.length > 0, `${text.slice(0, 70)}…`)
 check('usage metered', !!usage && BigInt(usage.cost) > 0n, usage && `${usage.tokens} tokens`)
-check('TEE attestation checks pass', !!proof && proof.checks.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok), proof?.checks.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
+// Without NEARAI_API_KEY the reply is simulated, so the one reply-signature check is expected to fail.
+const live = (await (await fetch(`${GW}/v1/health`)).json()).model_live
+check(live ? 'TEE attestation + reply signature verified' : 'TEE attestation checks pass (reply simulated)', !!proof && (live ? proof.verified === true : proof.checks.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok)), proof?.checks.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
 
 r = await post('/v1/chat', chatBody, good)
 check('replayed request rejected', r.status === 401, String(r.status))

@@ -26,7 +26,7 @@ What is real and what is not, exactly:
 | Gateway caller authentication | Real. Every request is signed by a per-session chat key registered on-chain |
 | TEE attestation (Intel TDX + NVIDIA GPU) | Real, fetched and verified live from NEAR AI Cloud, no API key needed |
 | Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |
-| Reply signature check | Implemented and unit-tested, not yet run against the live service (needs the API key) |
+| Reply signature check | Real. Each reply's signature is checked against the attested enclave key and the exact request and response bytes; verified live on testnet |
 | Mode A (zkAPI) | Not implemented. Preview only |
 | NEAR Intents | Real dry-run prices. No swap execution |
 
