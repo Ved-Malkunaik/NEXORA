@@ -9,7 +9,8 @@
 // transcript is kept in this browser's localStorage, not on any server.
 import { actionCreators, type WalletSelector } from '@near-wallet-selector/core'
 import type { NetworkConfig } from '../config/networks'
-import { viewFunction } from '../lib/rpc'
+import { formatNear } from '../lib/near-amount'
+import { viewAccount, viewFunction } from '../lib/rpc'
 import { authHeaders, clientKeyArg, newChatKey, type ChatKey } from './chatKey'
 import { INTENTS_ASSETS, oneClickQuote } from './intents'
 import type {
@@ -21,6 +22,7 @@ import type {
   PrivacyMode,
   Proof,
   Receipt,
+  RecipientStatus,
   SessionInfo,
   Yocto,
 } from './types'
@@ -262,7 +264,7 @@ export class LiveClient implements NexoraClient {
       account_id: accountId,
       mode,
       prompt,
-      history: history.filter((m) => !m.error && m.content).slice(-12).map((m) => ({ role: m.role, content: m.content })),
+      history: history.filter((m) => !m.error && !m.action && m.content).slice(-12).map((m) => ({ role: m.role, content: m.content })),
     })
     let headers: Record<string, string>
     try {
@@ -323,6 +325,39 @@ export class LiveClient implements NexoraClient {
       save()
       this.bump()
     }
+  }
+
+  // ---------- wallet actions (Mode A) ----------
+
+  async checkRecipient(to: string): Promise<RecipientStatus> {
+    if (/^[0-9a-f]{64}$/.test(to)) return 'implicit'
+    try {
+      await viewAccount(this.cfg, to)
+      return 'exists'
+    } catch (e) {
+      return /does not exist|UNKNOWN_ACCOUNT/i.test(e instanceof Error ? e.message : String(e)) ? 'missing' : 'unknown'
+    }
+  }
+
+  async transferNear(_accountId: string, sessionId: string, to: string, amount: Yocto, prompt: string): Promise<ChatMessage[]> {
+    const wallet = await this.selector.wallet()
+    let tx: string | undefined
+    try {
+      const outcome = (await wallet.signAndSendTransaction({ receiverId: to, actions: [actionCreators.transfer(BigInt(amount))] })) as Outcome | void
+      outcomeValue(outcome) // throws if the transaction failed on-chain
+      tx = outcome?.transaction?.hash ?? outcome?.transaction_outcome?.id
+    } catch (e) {
+      throw new Error(describeError(e))
+    }
+    const history = this.local<ChatMessage[]>(`chat:${sessionId}`, [])
+    const at = Date.now()
+    const added: ChatMessage[] = [
+      { id: `${sessionId}-${history.length}`, role: 'user', content: prompt, at, action: true },
+      { id: `${sessionId}-${history.length + 1}`, role: 'assistant', content: `Sent ${formatNear(amount, 24)} NEAR to ${to} from your wallet.`, at, action: true, tx },
+    ]
+    this.setLocal(`chat:${sessionId}`, [...history, ...added])
+    this.bump()
+    return added
   }
 
   // ---------- funding ----------

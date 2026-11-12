@@ -1,6 +1,7 @@
 // In-browser stand-in for contract + gateway + NEAR AI Cloud + Intents.
 // Enforces the same rules and error messages as contract/src/lib.rs so the UI's
 // validation and error states are real. Everything it returns is labelled mock.
+import { formatNear } from '../lib/near-amount'
 import type {
   ChatEvent,
   ChatMessage,
@@ -13,6 +14,7 @@ import type {
   PrivacyMode,
   Proof,
   Receipt,
+  RecipientStatus,
   SessionInfo,
   TeeAttestation,
   Yocto,
@@ -467,6 +469,34 @@ export class MockClient implements NexoraClient {
       raw: { mock: true, note: 'Demo account. zkAPI is not integrated yet: a real Mode A request is paid from an on-chain session linked to your account.' },
     }
     return p
+  }
+
+  // ---------- wallet actions (Mode A), simulated ----------
+
+  async checkRecipient(to: string): Promise<RecipientStatus> {
+    await this.latency(200, 400)
+    return /^[0-9a-f]{64}$/.test(to) ? 'implicit' : 'exists'
+  }
+
+  async transferNear(accountId: string, sessionId: string, to: string, amount: Yocto, prompt: string): Promise<ChatMessage[]> {
+    const s = this.state.sessions[sessionId]
+    if (!s || s.owner !== accountId) throw new Error('This session is closed. Open a new one to keep chatting.')
+    await this.latency(700, 1300)
+    if (this.failing()) throw new Error('Cancelled in the wallet')
+    const msgs = (this.state.messages[sessionId] ??= [])
+    const added: ChatMessage[] = [
+      { id: `${sessionId}-${msgs.length}`, role: 'user', content: prompt, at: this.now(), action: true },
+      {
+        id: `${sessionId}-${msgs.length + 1}`,
+        role: 'assistant',
+        content: `Demo account: a wallet would now send ${formatNear(amount, 24)} NEAR to ${to}. Nothing was sent.`,
+        at: this.now(),
+        action: true,
+      },
+    ]
+    msgs.push(...added)
+    this.commit()
+    return added
   }
 
   // ---------- funding (NEAR Intents) ----------

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useClient, useClientQuery, useNow } from '../client/context'
 import { GATEWAY_URL, fetchGatewayHealth, type GatewayHealth } from '../client/live'
-import type { ChatMessage, PrivacyMode, Proof, SessionInfo } from '../client/types'
+import type { ChatMessage, PrivacyMode, Proof, RecipientStatus, SessionInfo } from '../client/types'
 import { MODE_INFO, OpenSessionModal, SessionCard, prefs, sessionPhase } from '../components/actions'
 import { PageHeader, RequireWallet } from '../components/Layouts'
 import { useToast } from '../components/toast'
-import { CopyButton, EmptyState, ErrorState, MockBadge, Near, Skeleton, formatTime, shortHash } from '../components/ui'
+import { CopyButton, EmptyState, ErrorState, MockBadge, Modal, Near, Skeleton, formatTime, shortHash } from '../components/ui'
+import { parseTransfer, type TransferIntent } from '../lib/transferIntent'
 import { useNear } from '../wallet/context'
 
 export function Chat() {
@@ -156,6 +157,45 @@ function ChatPanel({
   const abort = useRef<AbortController | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const phase = sessionPhase(session, now)
+  const { config } = useNear()
+  /** A transfer request waiting for the user's confirmation (Mode A). */
+  const [pending, setPending] = useState<{ intent: TransferIntent; prompt: string; recipient: RecipientStatus | 'checking' } | null>(null)
+  const [sending, setSending] = useState(false)
+
+  /** Mode A: a clear "send X NEAR to Y" is handled here in the browser, never sent to the gateway. */
+  function interceptTransfer(prompt: string): boolean {
+    if (session.mode !== 'A') return false
+    const parsed = parseTransfer(prompt)
+    if (parsed.kind === 'none') return false
+    if (parsed.kind === 'invalid' || parsed.intent.to === accountId) {
+      setNotice({ code: 'TRANSFER', text: parsed.kind === 'invalid' ? `That looks like a transfer, but ${parsed.reason} Nothing was sent.` : 'That would send NEAR to your own account. Nothing was sent.' })
+      return true
+    }
+    const { intent } = parsed
+    setNotice(null)
+    setPending({ intent, prompt, recipient: 'checking' })
+    client
+      .checkRecipient(intent.to)
+      .catch((): RecipientStatus => 'unknown')
+      .then((recipient) => setPending((cur) => (cur && cur.intent === intent ? { ...cur, recipient } : cur)))
+    return true
+  }
+
+  async function confirmTransfer() {
+    if (!pending || sending) return
+    setSending(true)
+    try {
+      const added = await client.transferNear(accountId, session.session_id, pending.intent.to, pending.intent.yocto, pending.prompt)
+      setMessages((m) => [...(m ?? []), ...added])
+      setDraft('')
+      setPending(null)
+      toast.ok('Transfer sent', `${pending.intent.amount} NEAR to ${pending.intent.to}`)
+    } catch (e) {
+      toast.error('Transfer not sent', e instanceof Error ? e.message : String(e))
+    } finally {
+      setSending(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -173,6 +213,7 @@ function ChatPanel({
   async function send(text: string) {
     const prompt = text.trim()
     if (!prompt || streaming) return
+    if (interceptTransfer(prompt)) return
     setDraft('')
     setNotice(null)
     setStreaming(true)
@@ -208,7 +249,9 @@ function ChatPanel({
       ? 'This session has expired. End it to settle, or open a new one.'
       : notice?.code === 'CAP_REACHED'
         ? 'Spending cap reached. Open a new session to continue.'
-        : `Message Nexora (${MODE_INFO[session.mode].short} · ${MODE_INFO[session.mode].title.toLowerCase()})`
+        : session.mode === 'A'
+          ? `Message Nexora, or try "send 0.001 NEAR to alice.${config.networkId === 'mainnet' ? 'near' : 'testnet'}"`
+          : `Message Nexora (${MODE_INFO[session.mode].short} · ${MODE_INFO[session.mode].title.toLowerCase()})`
 
   return (
     <section className="card chat">
@@ -238,6 +281,16 @@ function ChatPanel({
             <div key={m.id} className={`bubble ${m.role === 'user' ? 'me' : ''} ${m.error ? 'has-error' : ''}`}>
               {m.role === 'assistant' && <span className="label muted">Nexora</span>}
               <div className="bubble-text">{m.content || (streaming && m.role === 'assistant' ? <span className="typing">●●●</span> : '')}</div>
+              {m.action && m.role === 'assistant' && (
+                <div className="bubble-meta">
+                  <span>Wallet action · not sent to a model · no credits used</span>
+                  {m.tx && (
+                    <a href={`${config.explorerUrl}/txns/${m.tx}`} target="_blank" rel="noreferrer">
+                      View transaction ↗
+                    </a>
+                  )}
+                </div>
+              )}
               {(m.cost || m.error) && (
                 <div className="bubble-meta">
                   {m.cost && (
@@ -299,6 +352,72 @@ function ChatPanel({
           </button>
         )}
       </form>
+
+      <Modal
+        open={!!pending}
+        onClose={() => !sending && setPending(null)}
+        busy={sending}
+        label="Confirm transfer"
+        title={pending ? `Send ${pending.intent.amount} NEAR` : 'Send NEAR'}
+        footer={
+          <>
+            <span className="muted small">{sending ? 'Approve it in your wallet…' : 'Your wallet opens next. Nothing moves until you approve there.'}</span>
+            <button className="btn btn-primary" onClick={confirmTransfer} disabled={sending || !pending || pending.recipient === 'checking' || pending.recipient === 'missing'}>
+              {sending ? 'Waiting for wallet…' : 'Open wallet'}
+            </button>
+          </>
+        }
+      >
+        {pending && (
+          <>
+            <ul className="kv kv-row small">
+              <li>
+                <span className="muted">Amount</span>
+                <strong>
+                  <Near yocto={pending.intent.yocto} decimals={24} />
+                </strong>
+              </li>
+              <li>
+                <span className="muted">To</span>
+                <strong className="mono" style={{ overflowWrap: 'anywhere' }}>
+                  {pending.intent.to}
+                </strong>
+              </li>
+              <li>
+                <span className="muted">From</span>
+                <span className="mono">{accountId}</span>
+              </li>
+              <li>
+                <span className="muted">Network</span>
+                <span>{config.label}</span>
+              </li>
+              <li>
+                <span className="muted">Recipient</span>
+                <span className={pending.recipient === 'missing' ? 'error' : ''}>
+                  {pending.recipient === 'checking'
+                    ? 'Checking…'
+                    : pending.recipient === 'exists'
+                      ? `Account exists on ${config.label.toLowerCase()}`
+                      : pending.recipient === 'implicit'
+                        ? 'Implicit account (created on first transfer)'
+                        : pending.recipient === 'missing'
+                          ? `No such account on ${config.label.toLowerCase()}`
+                          : 'Could not check. Make sure the name is right.'}
+                </span>
+              </li>
+            </ul>
+            {pending.recipient === 'missing' && (
+              <p className="small error">
+                {pending.intent.to} does not exist on {config.label.toLowerCase()}, so this transfer would fail.
+                {config.networkId === 'testnet' && pending.intent.to.endsWith('.near') ? ' Names ending in .near are mainnet accounts; on testnet they end in .testnet.' : ''}
+              </p>
+            )}
+            <p className="callout small">
+              <strong>This transfer is public.</strong> It goes from your account to the recipient on-chain, signed by your wallet. Your request was read in this browser only: it was not sent to the gateway or a model and uses no credits. Transfers cannot be undone.
+            </p>
+          </>
+        )}
+      </Modal>
     </section>
   )
 }

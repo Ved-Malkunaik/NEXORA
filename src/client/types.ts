@@ -65,7 +65,14 @@ export interface ChatMessage {
   cost?: Yocto
   tokens?: number
   error?: string
+  /** Set on the reply to a wallet action (a NEAR transfer): the transaction hash, if the wallet returned one. */
+  tx?: string
+  /** True for wallet-action messages: they never went to the gateway or a model. */
+  action?: boolean
 }
+
+/** Does the recipient of a transfer exist on this network? 'unknown' when the RPC could not say. */
+export type RecipientStatus = 'exists' | 'missing' | 'implicit' | 'unknown'
 
 /** Mode B: proof that the model ran in a TEE. */
 export interface TeeAttestation {
@@ -160,6 +167,14 @@ export interface NexoraClient {
   getMessages(accountId: string, sessionId: string): Promise<ChatMessage[]>
   chat(accountId: string, sessionId: string, prompt: string, signal?: AbortSignal): AsyncIterable<ChatEvent>
   getProof(accountId: string, sessionId: string): Promise<Proof | null>
+
+  /** Check a transfer recipient before the wallet opens. */
+  checkRecipient(accountId: string): Promise<RecipientStatus>
+  /**
+   * Send NEAR from the user's wallet to `to` (wallet popup; public on-chain) and record the request and
+   * the outcome in the session transcript. Does not touch credits, the gateway or a model.
+   */
+  transferNear(accountId: string, sessionId: string, to: string, amount: Yocto, prompt: string): Promise<ChatMessage[]>
 
   getAssets(): IntentsAsset[]
   getQuote(assetId: string, amountIn: string): Promise<IntentsQuote>

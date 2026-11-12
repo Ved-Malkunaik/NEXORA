@@ -48,7 +48,7 @@ export const TTL_OPTIONS = [
 ]
 
 export const MODE_INFO: Record<PrivacyMode, { short: string; title: string; body: string }> = {
-  A: { short: 'Mode A', title: 'Hide who pays', body: 'Preview: zkAPI is not integrated yet, so payment is still linked to your account. Shown so you can see the flow.' },
+  A: { short: 'Mode A', title: 'Hide who pays', body: 'Preview: zkAPI is not integrated yet, so payment is still linked to your account. You can also send NEAR by asking, for example "send 0.001 NEAR to alice.testnet".' },
   B: { short: 'Mode B', title: 'Hide what you ask', body: 'Runs in a TEE on NEAR AI Cloud. Each answer comes with an attestation.' },
 }
 

@@ -94,6 +94,7 @@ unit tests (`cd gateway && npm test`, 13 tests) and a scripted testnet run (`gat
 | G-6 | Low | **Metering state is a local JSON file.** If it is lost before settlement, the session settles at 0 (the user is undercharged, never overcharged). | Accepted |
 | G-7 | Info | Sessions opened without a chat key (from the CLI, or by an older build) cannot be used through the gateway; they can be reclaimed after the deadline, or settled by the operator with `npm run settle`. | By design |
 | G-8 | Info | Intents funding shows real 1Click dry-run prices but does not execute swaps. | Stated on the Funding page |
+| G-9 | Info | **Chat can start a NEAR transfer** (Mode A sessions). Mitigations: the request is parsed by a strict, unit-tested parser in the browser, never by a model, so neither a model reply nor the gateway can trigger or alter a transfer; only text the user typed and submitted is parsed; amounts use integer math; the recipient is checked on-chain; a confirmation shows amount, recipient and network; the wallet asks again. The transfer is public and is not a zkAPI payment. | By design. `gateway/test/transferIntent.test.js` |
 
 ## Reproduce
 

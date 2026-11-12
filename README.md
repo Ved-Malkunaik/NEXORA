@@ -28,6 +28,7 @@ What is real and what is not, exactly:
 | Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |
 | Reply signature check | Real. Each reply's signature is checked against the attested enclave key and the exact request and response bytes; verified live on testnet |
 | Mode A (zkAPI) | Not implemented. Preview only |
+| Send NEAR from chat (Mode A sessions) | Real. "send 0.001 NEAR to alice.testnet" opens a confirmation, then your wallet. The transfer is public; it is not a zkAPI payment |
 | NEAR Intents | Real dry-run prices. No swap execution |
 
 ## Run it
@@ -78,6 +79,7 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
 - **Who is calling** ([gateway/src/auth.js](gateway/src/auth.js)): opening a session also registers a per-session chat key on-chain. The gateway accepts a chat or settle request only if that key signed it, so nobody else can spend or close your session. No extra wallet popup.
 - **TEE attestation** ([gateway/src/nearai.js](gateway/src/nearai.js)): six checks before a prompt is sent, three more on the reply. The chat page lists each one with pass or fail, plus the raw quote so you can re-verify.
 - **Intents quotes** ([src/client/intents.ts](src/client/intents.ts)): live dry-run prices from the 1Click API.
+- **Send NEAR from chat** ([src/lib/transferIntent.ts](src/lib/transferIntent.ts)): in a Mode A session, a clear request such as "send 0.001 NEAR to alice.testnet" is read by a strict parser in the browser, not by a model. The app checks the recipient exists, shows amount, recipient and network for confirmation, then opens the wallet. The request never reaches the gateway and costs no credits. Questions ("how do I send…?") still go to the model.
 
 ## Testnet deployment
 
@@ -122,6 +124,7 @@ Any static host works. `vercel.json` rewrites all routes to `index.html` for cli
 - You trust the gateway's attestation checks unless you re-verify the raw quote yourself.
 - Mode B does not make payment anonymous: sessions, caps, spend and timing are public on-chain under your account.
 - Mode A is not implemented, so nothing hides who pays today.
+- Sending NEAR from chat is an ordinary public transfer from your account. zkAPI would hide who pays for AI requests; it would not hide a transfer.
 - Deposits and withdrawals are public on-chain.
 - Chat transcripts are stored unencrypted in your browser's localStorage.
 
