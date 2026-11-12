@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClient, useNow } from '../client/context'
-import type { CreditBalance, PrivacyMode, SessionInfo } from '../client/types'
+import { useClient, useClientQuery, useNow } from '../client/context'
+import type { CreditBalance, NoteInfo, PrivacyMode, SessionInfo } from '../client/types'
 import { formatNear, parseNear, ratio, tryParseNear } from '../lib/near-amount'
 import { useNear } from '../wallet/context'
 import { useToast } from './toast'
@@ -48,7 +48,7 @@ export const TTL_OPTIONS = [
 ]
 
 export const MODE_INFO: Record<PrivacyMode, { short: string; title: string; body: string }> = {
-  A: { short: 'Mode A', title: 'Hide who pays', body: 'Preview: zkAPI is not integrated yet, so payment is still linked to your account. You can also send NEAR by asking, for example "send 0.001 NEAR to alice.testnet".' },
+  A: { short: 'Mode A', title: 'Hide who pays', body: 'Pay with a prepaid note and a zero-knowledge proof: the gateway sees a valid payment, not your account. You can also send NEAR by asking.' },
   B: { short: 'Mode B', title: 'Hide what you ask', body: 'Runs in a TEE on NEAR AI Cloud. Each answer comes with an attestation.' },
 }
 
@@ -208,7 +208,23 @@ export function OpenSessionModal({
   const [busy, setBusy] = useState(false)
   const available = balance ? BigInt(balance.available) : 0n
   const full = (balance?.open_sessions.length ?? 0) >= MAX_OPEN
-  const err = !balance
+  /** Live Mode A is paid with fixed-price notes; null on the demo account, where Mode A is simulated. */
+  const noteQuery = useClientQuery<NoteInfo | null>((c) => (open ? c.getNoteInfo() : Promise.resolve(null)), [open])
+  const note = mode === 'A' ? (noteQuery.data ?? null) : null
+  const mustBuy = !!note && note.unspent === 0
+  const err = note
+    ? !mustBuy
+      ? null
+      : !balance
+        ? 'Deposit credits first'
+        : full
+          ? 'You already have 4 open sessions. End one first.'
+          : BigInt(note.price) > available
+            ? `A note costs ${formatNear(note.price)} NEAR. Only ${formatNear(available)} NEAR is available`
+            : null
+    : mode === 'A' && noteQuery.error
+      ? noteQuery.error
+      : !balance
     ? 'Deposit credits first'
     : full
       ? 'You already have 4 open sessions. End one first.'
@@ -223,8 +239,9 @@ export function OpenSessionModal({
     if (!accountId || err) return
     setBusy(true)
     try {
-      const s = await client.openSession(accountId, parseNear(cap).toString(), ttl, mode)
-      toast.ok(`Session #${s.session_id} open`, `${formatNear(s.cap)} NEAR locked for ${TTL_OPTIONS.find((o) => o.s === ttl)?.label ?? `${ttl}s`}.`)
+      const s = await client.openSession(accountId, note ? note.price : parseNear(cap).toString(), ttl, mode)
+      if (note) toast.ok(`Anonymous session ${s.session_id} open`, `Paid with a ${formatNear(s.cap)} NEAR note. Good for ${note.tokens} tokens, 24 hours.`)
+      else toast.ok(`Session #${s.session_id} open`, `${formatNear(s.cap)} NEAR locked for ${TTL_OPTIONS.find((o) => o.s === ttl)?.label ?? `${ttl}s`}.`)
       onOpened?.(s)
       onClose()
     } catch (e) {
@@ -243,9 +260,11 @@ export function OpenSessionModal({
       title="Open a chat session"
       footer={
         <>
-          <span className="muted small">No wallet popup: signed with your session key.</span>
-          <button className="btn btn-primary" onClick={submit} disabled={busy || !cap || !!err}>
-            {busy ? 'Opening…' : 'Open session'}
+          <span className="muted small">
+            {note ? (busy ? 'Building the zero-knowledge proof. This can take up to a minute the first time.' : mustBuy ? 'Buying the note is public. Spending it is not.' : 'No account is sent with the proof.') : 'No wallet popup: signed with your session key.'}
+          </span>
+          <button className="btn btn-primary" onClick={submit} disabled={busy || (!note && !cap) || !!err || (mode === 'A' && noteQuery.loading)}>
+            {busy ? (note ? 'Proving…' : 'Opening…') : note ? (mustBuy ? `Buy a note and open` : 'Spend a note and open') : 'Open session'}
           </button>
         </>
       }
@@ -262,6 +281,38 @@ export function OpenSessionModal({
           ))}
         </div>
       </div>
+      {note && (
+        <div className="field">
+          <span className="label">Note</span>
+          <ul className="kv kv-row small">
+            <li>
+              <span className="muted">Price</span>
+              <span>
+                <Near yocto={note.price} /> · {note.tokens} tokens · 24 hours
+              </span>
+            </li>
+            <li>
+              <span className="muted">Notes sold so far</span>
+              <span>{note.pool}</span>
+            </li>
+            <li>
+              <span className="muted">Your unspent notes</span>
+              <span>{note.unspent}</span>
+            </li>
+          </ul>
+          {err && <p className="small error">{err}</p>}
+          <p className="small muted">
+            Every note costs the same, so they all look alike. Buying one is a public payment from your account. Spending it proves you hold a paid note without showing which, so the session is not tied to your account. What is left of a note when the session ends is not refunded.
+          </p>
+          {mustBuy && (
+            <p className="callout small">
+              <strong>Bought and spent in one go hides little.</strong> The gateway can match the purchase to the session by timing{note.pool < 9 ? `, and only ${note.pool} other note${note.pool === 1 ? ' has' : 's have'} been sold` : ''}. For real privacy, buy notes ahead of time and spend them later.
+            </p>
+          )}
+        </div>
+      )}
+      {!note && (
+      <>
       <AmountField
         label="Spending cap"
         value={cap}
@@ -281,6 +332,8 @@ export function OpenSessionModal({
         </div>
         <p className="small muted">If the gateway never settles, you can reclaim the full cap 15 minutes after it expires.</p>
       </div>
+      </>
+      )}
     </Modal>
   )
 }

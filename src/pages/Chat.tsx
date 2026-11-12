@@ -513,13 +513,41 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
               <span className="muted">Proof size</span>
               <span>{p.proof_bytes} bytes</span>
             </li>
-            <li>
-              <span className="muted">Key reuse window</span>
-              <span>{p.key_reuse_window_s}s · a fresh key for every request</span>
-            </li>
+            {p.anonymity_set !== undefined && (
+              <li>
+                <span className="muted">Hidden among</span>
+                <span>
+                  {p.anonymity_set} paid note{p.anonymity_set === 1 ? '' : 's'}
+                </span>
+              </li>
+            )}
           </ul>
+          {p.checks && p.checks.length > 0 && (
+            <ul className="checks small">
+              {p.checks.map((c) => (
+                <li key={c.name} title={c.detail}>
+                  <span className={c.ok ? 'check-ok' : 'check-fail'} aria-label={c.ok ? 'passed' : 'failed'}>
+                    {c.ok ? '✓' : '✕'}
+                  </span>
+                  <span>
+                    {c.name}
+                    <span className="muted"> · {c.detail}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
           {p.verified ? (
-            <p className="small muted">The provider sees that a valid credit paid for this request, not which account it came from. Your IP address and prompt are not hidden in this mode.</p>
+            <>
+              <p className="small muted">
+                The gateway checked that a paid note backs this session without learning which one, so it cannot tell which account paid. Requests inside this session can be linked to each other. Your IP address and your prompt are not hidden in this mode.
+              </p>
+              {p.anonymity_set !== undefined && p.anonymity_set < 10 && (
+                <p className="callout small">
+                  <strong>Small crowd.</strong> Only {p.anonymity_set} note{p.anonymity_set === 1 ? ' has' : 's have'} been sold, and note purchases are public, so the payer is one of {p.anonymity_set === 1 ? 'one account' : `at most ${p.anonymity_set} accounts`}. Privacy grows as more people buy notes, and if you wait between buying and spending.
+                </p>
+              )}
+            </>
           ) : (
             <p className="callout small">
               <strong>Payer not hidden yet.</strong> {typeof p.raw?.note === 'string' ? p.raw.note : 'No zero-knowledge proof was produced for this request.'}
@@ -555,9 +583,9 @@ function LiveNotice() {
         : !h
           ? ''
           : h.model_live
-            ? `Mode B replies come from ${h.model} inside a TEE on NEAR AI Cloud; the gateway verifies the attestation before sending your prompt.`
-            : `Mode B attestation of ${h.attested_model ?? 'the model'} is real, but replies are simulated: the gateway has no NEAR AI Cloud API key.`}{' '}
-      Mode A (zkAPI) is a preview: payment is still linked to your account.
+            ? `Replies come from ${h.model} inside a TEE on NEAR AI Cloud; the gateway verifies the attestation before sending your prompt.`
+            : `The attestation of ${h.attested_model ?? 'the model'} is real, but replies are simulated: the gateway has no NEAR AI Cloud API key.`}{' '}
+      Mode A pays with a note and a zero-knowledge proof, so the gateway cannot tell which account is asking; it still sees your IP address and your prompt.
     </p>
   )
 }

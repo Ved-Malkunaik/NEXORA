@@ -460,15 +460,20 @@ export class MockClient implements NexoraClient {
     }
     const p: PaymentProof = {
       kind: 'zk',
-      scheme: 'zkAPI (not integrated: preview only)',
+      scheme: 'Simulated (demo account)',
       nullifier: mockHex(`nullifier:${s.session_id}:${n}`),
       proof_bytes: 0,
       key_reuse_window_s: 0,
       verified: false,
       issued_at: this.now(),
-      raw: { mock: true, note: 'Demo account. zkAPI is not integrated yet: a real Mode A request is paid from an on-chain session linked to your account.' },
+      raw: { mock: true, note: 'Demo account: no note was bought and no proof was made. Connect a wallet to pay with a real note and a zero-knowledge proof.' },
     }
     return p
+  }
+
+  /** The demo account has no real notes: Mode A stays a labelled preview here. */
+  async getNoteInfo() {
+    return null
   }
 
   // ---------- wallet actions (Mode A), simulated ----------

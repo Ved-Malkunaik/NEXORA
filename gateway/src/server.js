@@ -4,6 +4,10 @@
 //   POST /v1/chat                      stream a reply (NDJSON), metered against the on-chain cap
 //   GET  /v1/metering?ids=1,2          metered spend per open session
 //   POST /v1/sessions/:id/settle       settle_session on-chain with the gateway's own metered total
+//   GET  /v1/notes                     Mode A: public list of paid note commitments, price, scope
+//   POST /v1/notes                     Mode A: buy a note (public; settles the purchase session)
+//   POST /v1/anon/sessions             Mode A: spend a note with a zero-knowledge proof (anonymous)
+//   POST /v1/anon/sessions/:id/close   Mode A: drop an anonymous session
 //   GET  /v1/attestation               fresh, verified NEAR AI Cloud TEE attestation (see nearai.js)
 //   GET  /v1/health                    config + whether a signing key is loaded
 //
@@ -21,6 +25,7 @@ import { clientKeyFromOpenTx, verifyRequest } from './auth.js'
 import { createGateway, readConfig, receiptHash } from './settlement.js'
 import { MOCK_MODEL_ID, answerFor, paymentPlaceholder } from './model.js'
 import { NEARAI_MODEL, attest, fetchSignature, streamChat, verifySignature } from './nearai.js'
+import { createNotes } from './notes.js'
 
 const NEARAI_API_KEY = process.env.NEARAI_API_KEY || ''
 const LIVE_MODEL = !!NEARAI_API_KEY
@@ -65,6 +70,15 @@ const REQUIRE_AUTH = process.env.REQUIRE_AUTH !== '0'
 const cfg = readConfig()
 const gw = createGateway(cfg)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** Mode A notes: one fixed price so every note looks the same. Default 0.02 NEAR = 1000 tokens. */
+const NOTE_PRICE = process.env.NOTE_PRICE_YOCTO || '20000000000000000000000'
+const notes = createNotes({
+  file: join(here, '..', '.data', 'notes.json'),
+  priceYocto: NOTE_PRICE,
+  yoctoPerToken: YOCTO_PER_TOKEN,
+  chain: { rpcUrl: cfg.rpcUrl, contractId: cfg.contractId, getSession: gw.getSession, settleExact: gw.settleExact },
+})
 
 function send(res, status, body, origin) {
   res.writeHead(status, { 'Content-Type': 'application/json', ...cors(origin) })
@@ -150,17 +164,33 @@ function cleanHistory(history) {
 const estTokens = (text) => BigInt(Math.ceil(text.length / 4))
 
 async function handleChat(req, res, origin) {
-  const { session_id, account_id, mode, prompt, history } = await readJson(req)
+  const body = await readJson(req)
+  const { account_id, mode, prompt, history, anon_session } = body
+  let session_id = body.session_id
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(res, 400, { error: 'Prompt must be 1–8000 characters' }, origin)
   let s
-  try {
-    s = await liveSession(session_id, account_id, req)
-  } catch (e) {
-    return send(res, e.status ?? 502, { code: e.code ?? 'GATEWAY_DOWN', error: e.error ?? String(e.message ?? e) }, origin)
+  let m
+  /** Set for a Mode A request paid with a note: no account is involved. */
+  let anon = null
+  if (anon_session !== undefined) {
+    try {
+      anon = notes.auth(anon_session, req)
+    } catch (e) {
+      return send(res, 401, { code: 'SESSION_CLOSED', error: `Not authorised for this session: ${e.message}` }, origin)
+    }
+    session_id = `anon:${String(anon_session).slice(0, 8)}`
+    s = { cap: notes.priceYocto, expires_at: (BigInt(anon.expires_at) * 1_000_000n).toString() }
+    m = anon
+  } else {
+    try {
+      s = await liveSession(session_id, account_id, req)
+    } catch (e) {
+      return send(res, e.status ?? 502, { code: e.code ?? 'GATEWAY_DOWN', error: e.error ?? String(e.message ?? e) }, origin)
+    }
   }
   if (nowNs() > BigInt(s.expires_at)) return send(res, 409, { code: 'SESSION_EXPIRED', error: 'This session has expired. End it to settle, or open a new one.' }, origin)
 
-  const m = (metering[session_id] ??= { metered: '0', tokens: 0, mode: mode === 'A' ? 'A' : 'B', requests: 0 })
+  m ??= metering[session_id] ??= { metered: '0', tokens: 0, mode: mode === 'A' ? 'A' : 'B', requests: 0 }
   const cap = BigInt(s.cap)
   const start = BigInt(m.metered)
   const messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...cleanHistory(history), { role: 'user', content: prompt }]
@@ -182,7 +212,7 @@ async function handleChat(req, res, origin) {
 
   // Mode B: verify the enclave BEFORE the prompt leaves the gateway.
   let attestation = null
-  if (m.mode === 'B') {
+  if (m.mode === 'B' || anon) {
     try {
       attestation = await currentAttestation()
     } catch (e) {
@@ -242,7 +272,8 @@ async function handleChat(req, res, origin) {
   m.metered = (start + cost).toString()
   m.tokens += Number(cost / YOCTO_PER_TOKEN)
   m.requests += 1
-  persist()
+  if (anon) notes.save()
+  else persist()
 
   if (closed) return res.end()
   if (failed) {
@@ -256,7 +287,8 @@ async function handleChat(req, res, origin) {
   }
   emit({ type: 'usage', tokens: Number(cost / YOCTO_PER_TOKEN), cost: cost.toString(), metered: m.metered })
 
-  if (m.mode === 'A') emit({ type: 'proof', proof: paymentPlaceholder(session_id, m.requests) })
+  if (anon) emit({ type: 'proof', proof: notes.proofFor(anon, attestation?.verified ?? null) })
+  else if (m.mode === 'A') emit({ type: 'proof', proof: paymentPlaceholder(session_id, m.requests) })
   else if (attestation) emit({ type: 'proof', proof: await responseProof(attestation, end) })
   emit({ type: 'done' })
   res.end()
@@ -339,6 +371,15 @@ async function handleSettle(req, res, origin, sessionId) {
   }
 }
 
+/** Turn a thrown error into a JSON reply (errors from notes.js are user-facing). */
+async function reply(res, origin, fn, failStatus = 400) {
+  try {
+    return send(res, 200, await fn(), origin)
+  } catch (e) {
+    return send(res, failStatus, { error: e instanceof Error ? e.message : String(e), checks: e?.checks }, origin)
+  }
+}
+
 const server = createServer(async (req, res) => {
   const origin = req.headers.origin
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
@@ -351,9 +392,27 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { ok: true, contract: cfg.contractId, gateway: cfg.gatewayId ?? null, can_settle: !!(cfg.gatewayId && cfg.privateKey), model: MODEL_ID, model_live: LIVE_MODEL, attested_model: NEARAI_MODEL, attestation_verified: attestCache ? attestCache.value.verified : null }, origin)
     if (req.method === 'GET' && url.pathname === '/v1/metering') {
       const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean)
-      return send(res, 200, Object.fromEntries(ids.map((id) => [id, metering[id]?.metered ?? '0'])), origin)
+      return send(res, 200, Object.fromEntries(ids.map((id) => [id, metering[id]?.metered ?? notes.metered(id) ?? '0'])), origin)
     }
     if (req.method === 'GET' && url.pathname === '/v1/attestation') return send(res, 200, await currentAttestation(), origin)
+    if (req.method === 'GET' && url.pathname === '/v1/notes') return send(res, 200, notes.info(), origin)
+    if (req.method === 'POST' && url.pathname === '/v1/notes') {
+      const b = await readJson(req)
+      return await reply(res, origin, () => notes.register({ accountId: b.account_id, sessionId: b.session_id, txHash: b.tx }))
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/anon/sessions') {
+      const b = await readJson(req)
+      return await reply(res, origin, () => notes.redeem({ proof: b.proof, clientKey: b.client_key }))
+    }
+    const anonClose = url.pathname.match(/^\/v1\/anon\/sessions\/([0-9a-f]{32})\/close$/)
+    if (req.method === 'POST' && anonClose) {
+      await readJson(req)
+      return await reply(res, origin, () => {
+        notes.auth(anonClose[1], req)
+        notes.close(anonClose[1])
+        return { closed: true }
+      }, 401)
+    }
     if (req.method === 'POST' && url.pathname === '/v1/chat') return await handleChat(req, res, origin)
     const settle = url.pathname.match(/^\/v1\/sessions\/(\d+)\/settle$/)
     if (req.method === 'POST' && settle) return await handleSettle(req, res, origin, settle[1])

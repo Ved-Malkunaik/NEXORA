@@ -108,7 +108,23 @@ export interface PaymentProof {
   key_reuse_window_s: number
   verified: boolean
   issued_at: number
+  /** How many paid notes this one hides among. Small numbers hide little. */
+  anonymity_set?: number
+  /** Each check the gateway ran on the zero-knowledge proof. */
+  checks?: ProofCheck[]
   raw: Record<string, unknown>
+}
+
+/** Mode A notes on the live gateway: fixed price, and what this browser holds. */
+export interface NoteInfo {
+  price: Yocto
+  tokens: number
+  /** Notes sold so far: the crowd a note hides in. */
+  pool: number
+  /** Paid notes in this browser that have not been spent. */
+  unspent: number
+  /** When the oldest unspent note was bought (ms), if any. */
+  oldest_unspent_at: number | null
 }
 
 export type Proof = TeeAttestation | PaymentProof
@@ -168,6 +184,8 @@ export interface NexoraClient {
   chat(accountId: string, sessionId: string, prompt: string, signal?: AbortSignal): AsyncIterable<ChatEvent>
   getProof(accountId: string, sessionId: string): Promise<Proof | null>
 
+  /** Mode A note details, or null where notes are not available (the demo account). */
+  getNoteInfo(): Promise<NoteInfo | null>
   /** Check a transfer recipient before the wallet opens. */
   checkRecipient(accountId: string): Promise<RecipientStatus>
   /**

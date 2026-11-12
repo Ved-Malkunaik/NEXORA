@@ -25,10 +25,10 @@ export function parseClientKey(k) {
 }
 
 /**
- * Read the open_session transaction and return the client key it registered, after checking it is
- * a successful open_session on `contractId`, signed by `owner`, that returned `sessionId`.
+ * Read an open_session transaction and return its arguments, after checking it is a successful
+ * open_session on `contractId`, signed by `owner`, that returned `sessionId`.
  */
-export async function clientKeyFromOpenTx({ rpcUrl, contractId, txHash, owner, sessionId }) {
+export async function readOpenTx({ rpcUrl, contractId, txHash, owner, sessionId }) {
   if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(String(txHash ?? ''))) throw new Error('Missing or malformed open-session transaction hash')
   const res = await fetch(rpcUrl, {
     method: 'POST',
@@ -44,7 +44,12 @@ export async function clientKeyFromOpenTx({ rpcUrl, contractId, txHash, owner, s
   if (call?.method_name !== 'open_session') throw new Error('That transaction is not an open_session call')
   const ret = status?.SuccessValue ? JSON.parse(Buffer.from(status.SuccessValue, 'base64').toString('utf8')) : null
   if (String(ret) !== String(sessionId)) throw new Error('That transaction opened a different session')
-  const args = JSON.parse(Buffer.from(call.args, 'base64').toString('utf8'))
+  return JSON.parse(Buffer.from(call.args, 'base64').toString('utf8'))
+}
+
+/** The chat key a session registered in its open_session transaction (hex). */
+export async function clientKeyFromOpenTx(params) {
+  const args = await readOpenTx(params)
   const key = parseClientKey(args.client_key)
   if (!key) throw new Error('This session was opened without a chat key. Open a new session from the app.')
   return Buffer.from(key).toString('hex')

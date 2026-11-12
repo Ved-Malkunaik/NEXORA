@@ -49,6 +49,23 @@ available ──withdraw──► user account
 A session ends exactly one way: it is either settled or reclaimed, never both. A closed
 session is deleted from state, so it cannot be settled or reclaimed again.
 
+## Mode A: pay with a note
+
+Mode A swaps steps 3 to 5 for two steps that are deliberately separate.
+
+1. **Buy a note (public).** The browser creates a secret and calls
+   `open_session(cap = note price, ttl, note_commitment)` with the session key. The gateway
+   reads that transaction, settles the session at its full cap, and adds the commitment to
+   the public note list. Every note costs the same.
+2. **Spend a note (anonymous).** The browser builds a zero-knowledge proof (Semaphore v4,
+   Groth16) that it knows the secret of one commitment in the list, bound to a fresh signing
+   key, and sends only that proof. The gateway verifies it, records the nullifier so the
+   note cannot be spent again, and opens a 24-hour session with the note's token budget.
+   Chat requests are signed with that key and carry no account id.
+
+Nothing about a Mode A session goes on-chain. There is no refund of unused tokens and no
+reclaim: the note was paid in full when it was bought.
+
 ## Timing
 
 | Value | Default | Why |
@@ -74,7 +91,6 @@ though the model runs in a TEE.
   We store only a receipt hash, never prompt or answer content.
 - Deposits and withdrawals are public on-chain.
 - Mode B hides the prompt from the model provider but not from the gateway, under option (a).
-- Mode A (zkAPI) is **not implemented**. It is a labelled preview: a Mode A session is paid
-  from an on-chain session linked to your account, so the payer is not hidden. When built,
-  it would hide who pays from the provider, but not the user's IP address or the prompt
-  contents, and its key-reuse window must be 0.
+- Mode A hides which account pays for a session, among the accounts that bought notes. It
+  does not hide the user's IP address or the prompt contents, and requests inside one
+  session are linkable to each other. See "Mode A" below.

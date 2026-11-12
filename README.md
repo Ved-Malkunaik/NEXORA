@@ -3,7 +3,7 @@
 A chat app where you choose which privacy axis to protect:
 
 - **Mode B: hide what you ask.** Prompts run in a TEE on NEAR AI Cloud. The gateway verifies the attestation before sending your prompt, and the UI lists every check. **Working.**
-- **Mode A: hide who pays.** Planned with zkAPI credits. **Not implemented: a labelled preview only.** Payment is still linked to your account.
+- **Mode A: hide who pays.** Buy a fixed-price note in public, then spend it with a zero-knowledge proof. The gateway verifies that a paid note backs your session without learning which account bought it. **Working**, with the limits listed below.
 - **Funding:** deposit NEAR directly. Stablecoin top-ups show real NEAR Intents (1Click) dry-run prices; executing the swap is not wired.
 
 Built for the NEAR Hackathon 2026, privacy track.
@@ -27,8 +27,8 @@ What is real and what is not, exactly:
 | TEE attestation (Intel TDX + NVIDIA GPU) | Real, fetched and verified live from NEAR AI Cloud, no API key needed |
 | Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |
 | Reply signature check | Real. Each reply's signature is checked against the attested enclave key and the exact request and response bytes; verified live on testnet |
-| Mode A (zkAPI) | Not implemented. Preview only |
-| Send NEAR from chat (Mode A sessions) | Real. "send 0.001 NEAR to alice.testnet" opens a confirmation, then your wallet. The transfer is public; it is not a zkAPI payment |
+| Mode A (pay with a note and a zero-knowledge proof) | Real on testnet. Semaphore v4 (Groth16) proofs made in the browser and verified by the gateway. This is the zkAPI idea built on NEAR, not the Ethereum zkAPI service. The proof is verified by the gateway, not on-chain |
+| Send NEAR from chat (Mode A sessions) | Real. "send 0.001 NEAR to alice.testnet" opens a confirmation, then your wallet. The transfer itself is public |
 | NEAR Intents | Real dry-run prices. No swap execution |
 
 ## Run it
@@ -78,6 +78,10 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
 - **Gateway** ([gateway/src/server.js](gateway/src/server.js)): checks each session on-chain, meters per token, stops at the cap, and settles with a function-call key that can only call `settle_session`. It stores token counts, never prompts or replies.
 - **Who is calling** ([gateway/src/auth.js](gateway/src/auth.js)): opening a session also registers a per-session chat key on-chain. The gateway accepts a chat or settle request only if that key signed it, so nobody else can spend or close your session. No extra wallet popup.
 - **TEE attestation** ([gateway/src/nearai.js](gateway/src/nearai.js)): six checks before a prompt is sent, three more on the reply. The chat page lists each one with pass or fail, plus the raw quote so you can re-verify.
+- **Mode A notes** ([gateway/src/notes.js](gateway/src/notes.js), [src/client/zk.ts](src/client/zk.ts)):
+  1. *Buy (public).* The browser makes a secret and sends its commitment on-chain as an extra argument of `open_session`, with the cap set to the fixed note price (0.02 NEAR = 1000 tokens). The gateway reads that transaction, settles the session at its full cap, and adds the commitment to a public list (`GET /v1/notes`).
+  2. *Spend (anonymous).* The browser proves, in zero knowledge, that it knows the secret of one commitment in the list, without saying which. The proof carries a nullifier so a note cannot be spent twice, and is bound to a fresh signing key. The gateway verifies it and opens a 24-hour session with the note's token budget. No account id is sent, then or with any later request.
+  3. The chat page shows each check the gateway ran and how many notes yours hides among.
 - **Intents quotes** ([src/client/intents.ts](src/client/intents.ts)): live dry-run prices from the 1Click API.
 - **Send NEAR from chat** ([src/lib/transferIntent.ts](src/lib/transferIntent.ts)): in a Mode A session, a clear request such as "send 0.001 NEAR to alice.testnet" is read by a strict parser in the browser, not by a model. The app checks the recipient exists, shows amount, recipient and network for confirmation, then opens the wallet. The request never reaches the gateway and costs no credits. Questions ("how do I send…?") still go to the model.
 
@@ -122,9 +126,12 @@ Any static host works. `vercel.json` rewrites all routes to `index.html` for cli
 
 - **The gateway operator sees your prompts.** The TEE hides them from the model provider, not from the gateway.
 - You trust the gateway's attestation checks unless you re-verify the raw quote yourself.
-- Mode B does not make payment anonymous: sessions, caps, spend and timing are public on-chain under your account.
-- Mode A is not implemented, so nothing hides who pays today.
-- Sending NEAR from chat is an ordinary public transfer from your account. zkAPI would hide who pays for AI requests; it would not hide a transfer.
+- Mode B does not make payment anonymous: sessions, caps, spend and timing are public on-chain under your account. Use Mode A for that.
+- **Mode A hides you only among other note buyers.** Buying a note is public, so the payer of a Mode A session is one of the accounts that bought notes. On testnet today that is a handful of notes, mostly from one account.
+- Buying a note and spending it straight away lets the gateway match the two by timing. Buy ahead, spend later.
+- Mode A does not hide your IP address or your prompt from the gateway, and requests inside one session are linkable to each other.
+- What is left of a note when its session ends is not refunded.
+- Sending NEAR from chat is an ordinary public transfer from your account.
 - Deposits and withdrawals are public on-chain.
 - Chat transcripts are stored unencrypted in your browser's localStorage.
 

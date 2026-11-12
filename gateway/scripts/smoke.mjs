@@ -12,6 +12,8 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { ed25519 } from '@noble/curves/ed25519.js'
+import { Group, Identity, generateProof } from '@semaphore-protocol/core'
+import { NOTE_SCOPE, keyMessage } from '../src/notes.js'
 import { readConfig } from '../src/settlement.js'
 
 const [owner, GW = 'http://localhost:8787'] = process.argv.slice(2)
@@ -43,16 +45,20 @@ function nearCli() {
   return process.platform === 'win32' && existsSync(winExe) ? winExe : 'near'
 }
 
-console.log(`Opening a session on ${contractId} as ${owner}…`)
-const cli = spawnSync(
-  nearCli(),
-  ['contract', 'call-function', 'as-transaction', contractId, 'open_session', 'json-args', JSON.stringify({ cap: '5000000000000000000000', ttl_seconds: '600', client_key: `ed25519:${pub}` }), 'prepaid-gas', '30 Tgas', 'attached-deposit', '0 NEAR', 'sign-as', owner, 'network-config', 'testnet', 'sign-with-keychain', 'send'],
-  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-)
-// near-cli-rs prints the return value to stdout and the transaction details to stderr.
-const out = `${cli.stdout ?? ''}\n${cli.stderr ?? ''}`
-const sessionId = out.match(/^"(\d+)"\s*$/m)?.[1]
-const tx = out.match(/Transaction ID: ([1-9A-HJ-NP-Za-km-z]{43,44})/)?.[1]
+/** Call open_session as `owner` with the keychain key. Returns the new session id and the tx hash. */
+function openSession(args) {
+  const cli = spawnSync(
+    nearCli(),
+    ['contract', 'call-function', 'as-transaction', contractId, 'open_session', 'json-args', JSON.stringify(args), 'prepaid-gas', '30 Tgas', 'attached-deposit', '0 NEAR', 'sign-as', owner, 'network-config', 'testnet', 'sign-with-keychain', 'send'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  // near-cli-rs prints the return value to stdout and the transaction details to stderr.
+  const out = `${cli.stdout ?? ''}\n${cli.stderr ?? ''}`
+  return { sessionId: out.match(/^"(\d+)"\s*$/m)?.[1], tx: out.match(/Transaction ID: ([1-9A-HJ-NP-Za-km-z]{43,44})/)?.[1] }
+}
+
+console.log(`Mode B: opening a session on ${contractId} as ${owner}…`)
+const { sessionId, tx } = openSession({ cap: '5000000000000000000000', ttl_seconds: '600', client_key: `ed25519:${pub}` })
 check('open_session returned an id and tx', !!sessionId && !!tx, `session ${sessionId}, tx ${tx}`)
 if (!sessionId || !tx) process.exit(1)
 
@@ -87,6 +93,57 @@ r = await post(`/v1/sessions/${sessionId}/settle`, settleBody, sign('POST', `/v1
 const settled = await r.json()
 check('settled on-chain with a receipt', r.status === 200 && settled.receipt?.outcome === 'Settled', settled.tx ?? settled.error)
 if (settled.receipt) console.log(`      spent ${settled.receipt.spent} yocto, refunded ${settled.receipt.refunded}, receipt ${settled.receipt.receipt_hash}`)
+
+// ---------- Mode A: buy a note in public, spend it with a zero-knowledge proof ----------
+console.log('\nMode A: buying a note…')
+const pool = await (await fetch(`${GW}/v1/notes`)).json()
+const identity = new Identity()
+const buy = openSession({ cap: pool.price, ttl_seconds: '300', note_commitment: identity.commitment.toString() })
+check('note purchase is on-chain', !!buy.sessionId && !!buy.tx, `session ${buy.sessionId}`)
+if (!buy.sessionId || !buy.tx) process.exit(1)
+
+r = await post('/v1/notes', JSON.stringify({ account_id: owner, session_id: buy.sessionId, tx: buy.tx }))
+const sold = await r.json()
+check('gateway took payment and listed the note', r.status === 200 && sold.anonymity_set >= 1, sold.error ?? `${sold.anonymity_set} note(s) in the pool, settle tx ${sold.settle_tx}`)
+
+const list = await (await fetch(`${GW}/v1/notes`)).json()
+const ask = ed25519.utils.randomSecretKey()
+const apub = hex(ed25519.getPublicKey(ask))
+const t0 = Date.now()
+const zk = await generateProof(identity, new Group(list.commitments.map((c) => BigInt(c))), BigInt(keyMessage(apub)), BigInt(NOTE_SCOPE))
+console.log(`      proof generated in ${Date.now() - t0} ms`)
+
+// The proof and everything after it carry no account id.
+const redeemBody = JSON.stringify({ proof: zk, client_key: `ed25519:${apub}` })
+check('proof request names no account', !redeemBody.includes(owner))
+r = await post('/v1/anon/sessions', redeemBody)
+const anon = await r.json()
+check('zero-knowledge proof accepted, anonymous session opened', r.status === 200 && /^[0-9a-f]{32}$/.test(anon.session_id ?? ''), anon.error ?? `${anon.tokens} tokens, hidden among ${anon.anonymity_set} note(s)`)
+
+r = await post('/v1/anon/sessions', JSON.stringify({ proof: zk, client_key: `ed25519:${apub}` }))
+check('same note cannot be spent twice', r.status === 400 && /not spent before/i.test((await r.json()).error ?? ''), String(r.status))
+
+if (anon.session_id) {
+  const asign = (path, body) => {
+    const ts = String(Date.now())
+    const msg = `nexora-auth-v1\nPOST ${path}\n${anon.session_id}\n${ts}\n${createHash('sha256').update(body).digest('hex')}`
+    return { 'X-Nexora-Ts': ts, 'X-Nexora-Sig': hex(ed25519.sign(new TextEncoder().encode(msg), ask)) }
+  }
+  const aBody = JSON.stringify({ anon_session: anon.session_id, mode: 'A', prompt: 'In one sentence: what is a zero-knowledge proof?' })
+  r = await post('/v1/chat', aBody)
+  check('unsigned anonymous chat rejected', r.status === 401, String(r.status))
+  r = await post('/v1/chat', aBody, asign('/v1/chat', aBody))
+  const aEvents = (await r.text()).trim().split('\n').map((l) => JSON.parse(l))
+  const aText = aEvents.filter((e) => e.type === 'token').map((e) => e.text).join('')
+  const aProof = aEvents.find((e) => e.type === 'proof')?.proof
+  check('anonymous chat streams a reply', r.status === 200 && aText.length > 0, `${aText.slice(0, 70)}…`)
+  check('payment proof verified', aProof?.kind === 'zk' && aProof.verified === true, aProof?.checks?.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
+  const meter = await (await fetch(`${GW}/v1/metering?ids=${anon.session_id}`)).json()
+  check('usage metered against the note', BigInt(meter[anon.session_id] ?? '0') > 0n, `${meter[anon.session_id]} yocto of ${anon.cap}`)
+  const closePath = `/v1/anon/sessions/${anon.session_id}/close`
+  r = await post(closePath, '{}', asign(closePath, '{}'))
+  check('anonymous session closed', r.status === 200, String(r.status))
+}
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed')
 process.exit(failures ? 1 : 0)

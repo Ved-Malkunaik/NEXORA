@@ -48,8 +48,8 @@ export const PROMISES: PrivacyPromise[] = [
   },
   {
     name: 'Mode A · Hide who pays',
-    role: 'zkAPI · Preview, not yet live',
-    quote: '“Planned: pay with zero-knowledge credits, so the provider can verify a payment without learning whose it is. Today it is a labelled preview.',
+    role: 'Notes · Zero-knowledge proofs',
+    quote: '“Buy a note, then prove in zero knowledge that you hold a paid one. The gateway can verify the payment without learning whose it is.',
   },
   {
     name: 'Capped sessions',
