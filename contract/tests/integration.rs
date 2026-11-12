@@ -1,6 +1,8 @@
 //! Sandbox integration tests: real wasm, real runtime, real promises.
 //! The NEAR sandbox has no Windows build, so these run on Linux/macOS only (CI or Docker).
 #![cfg(not(windows))]
+// Test helpers hold the sandbox handle across awaits; Send-ness of these futures is irrelevant here.
+#![allow(clippy::future_not_send)]
 
 use near_api::signer::generate_secret_key;
 use near_api::types::{AccessKeyPermission, FunctionCallPermission};
@@ -75,7 +77,7 @@ impl Env {
         method: &str,
         args: Value,
         deposit: NearToken,
-    ) -> R<near_api::types::transaction::result::ExecutionFinalResult> {
+    ) -> R<near_api::types::transaction::result::TransactionResult> {
         Ok(self
             .contract
             .call_function(method, args)
@@ -138,13 +140,13 @@ fn yocto(v: &Value) -> u128 {
         .parse()
         .unwrap()
 }
-fn milli(n: u128) -> NearToken {
+const fn milli(n: u128) -> NearToken {
     NearToken::from_millinear(n)
 }
-fn zero() -> NearToken {
+const fn zero() -> NearToken {
     NearToken::from_yoctonear(0)
 }
-fn one_yocto() -> NearToken {
+const fn one_yocto() -> NearToken {
     NearToken::from_yoctonear(1)
 }
 

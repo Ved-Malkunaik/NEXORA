@@ -13,7 +13,7 @@ Built for the NEAR Hackathon 2026, privacy track.
 | Level | Scope | State |
 |---|---|---|
 | 0 | Landing page (3D robot), navbar, app shell, wallet connect, session key, mainnet/testnet switch | Done |
-| 1 | Credits contract (Rust), tests, security pass | Contract + tests + security report done; testnet deploy and gateway stub next |
+| 1 | Credits contract (Rust), tests, security pass | Contract, tests, security report and gateway stub done; testnet deploy needs your account |
 | 2 | Every screen final, on mock data | Planned |
 | 3 | Contract and gateway wired to the UI | Planned |
 
@@ -53,6 +53,7 @@ src/
   components/             navbar, wallet modal, layouts, session-key card
   pages/                  Dashboard, Chat, Funding, Receipts, Settings
 contract/                 Rust credits contract (near-sdk 5.30), unit + sandbox tests
+gateway/                  Node stub: reads sessions, settles them with a receipt hash
 docs/                     workflow, contract spec, security report
 ```
 
