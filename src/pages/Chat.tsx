@@ -210,10 +210,10 @@ function ChatPanel({
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
   }, [messages])
 
-  async function send(text: string) {
+  async function send(text: string, asMessage = false) {
     const prompt = text.trim()
     if (!prompt || streaming) return
-    if (interceptTransfer(prompt)) return
+    if (!asMessage && interceptTransfer(prompt)) return
     setDraft('')
     setNotice(null)
     setStreaming(true)
@@ -362,6 +362,18 @@ function ChatPanel({
         footer={
           <>
             <span className="muted small">{sending ? 'Approve it in your wallet…' : 'Your wallet opens next. Nothing moves until you approve there.'}</span>
+            {!sending && pending && (
+              <button
+                className="btn"
+                onClick={() => {
+                  const p = pending.prompt
+                  setPending(null)
+                  void send(p, true)
+                }}
+              >
+                Ask the model instead
+              </button>
+            )}
             <button className="btn btn-primary" onClick={confirmTransfer} disabled={sending || !pending || pending.recipient === 'checking' || pending.recipient === 'missing'}>
               {sending ? 'Waiting for wallet…' : 'Open wallet'}
             </button>
@@ -571,7 +583,8 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
 /** Live mode: be explicit about what is real (credits, metering, settlement) and what is not yet (model replies). */
 function LiveNotice() {
   const client = useClient()
-  const health = useClientQuery<GatewayHealth>(() => fetchGatewayHealth(), [])
+  // Only the live client talks to the gateway; the demo account must not reach out to it.
+  const health = useClientQuery<GatewayHealth | null>((c) => (c.kind === 'live' ? fetchGatewayHealth() : Promise.resolve(null)), [])
   if (client.kind !== 'live') return null
   const h = health.data
   return (

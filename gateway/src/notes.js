@@ -173,5 +173,12 @@ export function createNotes({ file, priceYocto, yoctoPerToken, chain, verify = v
 
   const metered = (id) => state.sessions[id]?.metered
 
-  return { info, register, redeem, auth, close, proofFor, metered, save, priceYocto, tokens }
+  /** Drop anonymous sessions that have expired. Spent nullifiers are kept forever. */
+  function prune() {
+    const before = Object.keys(state.sessions).length
+    for (const [id, rec] of Object.entries(state.sessions)) if (now() > rec.expires_at) delete state.sessions[id]
+    if (Object.keys(state.sessions).length !== before) save()
+  }
+
+  return { info, register, redeem, auth, close, proofFor, metered, prune, save, priceYocto, tokens }
 }

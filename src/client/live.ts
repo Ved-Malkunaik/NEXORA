@@ -93,6 +93,19 @@ function outcomeValue(o: Outcome | void): unknown {
   return null
 }
 
+/** The last few turns, newest kept first, within the gateway's 24k-character context budget. */
+function recentTurns(history: ChatMessage[]): { role: ChatMessage['role']; content: string }[] {
+  const out: { role: ChatMessage['role']; content: string }[] = []
+  let budget = 20_000
+  for (const m of history.filter((x) => !x.error && !x.action && x.content).slice(-12).reverse()) {
+    const content = m.content.slice(0, 6000)
+    budget -= content.length
+    if (budget < 0) break
+    out.unshift({ role: m.role, content })
+  }
+  return out
+}
+
 export class LiveClient implements NexoraClient {
   readonly kind = 'live' as const
   private version = 0
@@ -119,8 +132,21 @@ export class LiveClient implements NexoraClient {
     this.listeners.forEach((l) => l())
   }
 
-  private view<T>(method: string, args: object = {}) {
-    return viewFunction<T>(this.cfg, method, args)
+  private async view<T>(method: string, args: object = {}) {
+    try {
+      return await viewFunction<T>(this.cfg, method, args)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/does not exist|UNKNOWN_ACCOUNT|no contract code|CodeDoesNotExist/i.test(msg))
+        throw new Error(`The credits contract (${this.cfg.contractId}) is not deployed on ${this.cfg.label.toLowerCase()} yet. Switch network in Settings.`)
+      throw e
+    }
+  }
+
+  /** The signed-in account. Notes and anonymous sessions are kept per account in this browser. */
+  private me(): string {
+    const accounts = this.selector.store.getState().accounts
+    return (accounts.find((a) => a.active) ?? accounts[0])?.accountId ?? 'nobody'
   }
 
   private async call(method: string, args: object, deposit: bigint, gasTgas = 30n): Promise<unknown> {
@@ -173,6 +199,7 @@ export class LiveClient implements NexoraClient {
       return authHeaders(a.key, method, path, a.id, body)
     }
     const k = this.chatKey(sessionId)
+    if (k && !k.tx) throw new Error('Your wallet did not return the transaction that opened this session, so the gateway cannot check it is yours. Reclaim it after it expires, and try another wallet.')
     if (!k) throw new Error('This browser does not hold the chat key for this session (it was opened elsewhere or before this version). End it from the browser that opened it, or reclaim it after the deadline.')
     return authHeaders(k, method, path, sessionId, body, k.tx)
   }
@@ -210,10 +237,12 @@ export class LiveClient implements NexoraClient {
       : {}
     const sessions = await Promise.all(open.map((id) => this.view<ChainSession | null>('get_session', { session_id: id })))
     // A session that is buying a note is closed by the gateway within seconds; do not offer it as a chat.
-    const buying = new Set(this.notes().map((n) => n.session_id))
+    // If that never happened and it has expired, show it so the cap can be reclaimed.
+    const buying = new Set(this.notes().filter((n) => n.state === 'paying').map((n) => n.session_id))
+    const nowNs = BigInt(Date.now()) * 1_000_000n
     return [
       ...sessions
-        .filter((s): s is ChainSession => !!s && !buying.has(s.session_id))
+        .filter((s): s is ChainSession => !!s && !(buying.has(s.session_id) && nowNs <= BigInt(s.expires_at)))
         .map((s) => ({ ...s, mode: modes[s.session_id] ?? 'B', metered: metering[s.session_id] ?? '0' })),
       ...anon.map(
         (a): SessionInfo => ({
@@ -254,16 +283,16 @@ export class LiveClient implements NexoraClient {
   // ---------- Mode A: notes and anonymous sessions ----------
 
   private notes() {
-    return this.local<Note[]>('notes', [])
+    return this.local<Note[]>(`notes:${this.me()}`, [])
   }
   private saveNote(note: Note) {
-    this.setLocal('notes', [...this.notes().filter((n) => n.commitment !== note.commitment), note])
+    this.setLocal(`notes:${this.me()}`, [...this.notes().filter((n) => n.commitment !== note.commitment), note])
   }
   private dropNote(commitment: string) {
-    this.setLocal('notes', this.notes().filter((n) => n.commitment !== commitment))
+    this.setLocal(`notes:${this.me()}`, this.notes().filter((n) => n.commitment !== commitment))
   }
   private anonSessions() {
-    return this.local<AnonSession[]>('anon', [])
+    return this.local<AnonSession[]>(`anon:${this.me()}`, [])
   }
 
   async getNoteInfo(): Promise<NoteInfo | null> {
@@ -298,7 +327,19 @@ export class LiveClient implements NexoraClient {
         throw e
       }
     }
-    await this.gateway('/v1/notes', { method: 'POST', body: JSON.stringify({ account_id: accountId, session_id: note.session_id, tx: note.tx }) })
+    try {
+      await this.gateway('/v1/notes', { method: 'POST', body: JSON.stringify({ account_id: accountId, session_id: note.session_id, tx: note.tx }) })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // The gateway refused this purchase for good (for example the session expired first). Nothing was
+      // charged: forget the note so the next attempt starts clean. The session's cap can be reclaimed.
+      if (!/not reachable|Gateway error 5|Settlement failed|Could not read/i.test(msg)) {
+        this.dropNote(note.commitment)
+        this.bump()
+        throw new Error(`${msg} The note was not sold and nothing was charged; reclaim session #${note.session_id} after it expires.`)
+      }
+      throw e
+    }
     note = { ...note, state: 'ready' }
     this.saveNote(note)
     this.bump()
@@ -324,7 +365,7 @@ export class LiveClient implements NexoraClient {
     })
     this.dropNote(note.commitment) // spent
     const a: AnonSession = { ui_id: `a-${r.session_id.slice(0, 8)}`, id: r.session_id, key, cap: r.cap, opened_at: Date.now(), expires_at: r.expires_at, anonymity_set: r.anonymity_set }
-    this.setLocal('anon', [...this.anonSessions(), a])
+    this.setLocal(`anon:${this.me()}`, [...this.anonSessions(), a])
     this.bump()
     return {
       session_id: a.ui_id,
@@ -346,7 +387,7 @@ export class LiveClient implements NexoraClient {
       const path = `/v1/anon/sessions/${a.id}/close`
       await this.gateway(path, { method: 'POST', body: '{}', headers: authHeaders(a.key, 'POST', path, a.id, '{}') }).catch(() => undefined)
     }
-    this.setLocal('anon', this.anonSessions().filter((x) => x.ui_id !== sessionId))
+    this.setLocal(`anon:${this.me()}`, this.anonSessions().filter((x) => x.ui_id !== sessionId))
     this.bump()
     return { session_id: sessionId, cap: a.cap, spent: a.cap, refunded: '0', receipt_hash: null, closed_at: msToNs(Date.now()), outcome: 'Settled' }
   }
@@ -355,8 +396,11 @@ export class LiveClient implements NexoraClient {
     if (mode === 'A') return this.openAnonSession(accountId)
     // The chat key's public half goes on-chain in this call; the gateway checks requests against it.
     const key = newChatKey()
+    const before = new Set((await this.getBalance(accountId))?.open_sessions ?? [])
     const { value, tx } = await this.callTx('open_session', { cap, ttl_seconds: String(ttlSeconds), client_key: clientKeyArg(key) }, 0n)
-    const id = value as string
+    // Some wallets do not hand back the call's result: find the session that just appeared.
+    const id = typeof value === 'string' ? value : ((await this.getBalance(accountId))?.open_sessions ?? []).find((x) => !before.has(x))
+    if (!id) throw new Error('The session was not opened. Check your wallet and try again.')
     this.setLocal(`chatkey:${id}`, { ...key, tx })
     const modes = this.local<Record<string, PrivacyMode>>('modes', {})
     modes[id] = mode
@@ -418,7 +462,7 @@ export class LiveClient implements NexoraClient {
       ...(anon ? { anon_session: anon.id } : { session_id: sessionId, account_id: accountId }),
       mode,
       prompt,
-      history: history.filter((m) => !m.error && !m.action && m.content).slice(-12).map((m) => ({ role: m.role, content: m.content })),
+      history: recentTurns(history),
     })
     let headers: Record<string, string>
     try {

@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { clientKeyFromOpenTx, verifyRequest } from './auth.js'
 import { createGateway, readConfig, receiptHash } from './settlement.js'
-import { MOCK_MODEL_ID, answerFor, paymentPlaceholder } from './model.js'
+import { MOCK_MODEL_ID, answerFor } from './model.js'
 import { NEARAI_MODEL, attest, fetchSignature, streamChat, verifySignature } from './nearai.js'
 import { createNotes } from './notes.js'
 
@@ -92,13 +92,20 @@ function cors(origin) {
 }
 
 async function readJson(req) {
+  if (req.parsedBody !== undefined) return req.parsedBody
   let raw = ''
   for await (const chunk of req) {
     raw += chunk
-    if (raw.length > 64_000) throw new Error('Request too large')
+    if (raw.length > 64_000) throw Object.assign(new Error('Request too large'), { status: 413 })
   }
   req.rawBody = raw // the signature covers these exact bytes
-  return raw ? JSON.parse(raw) : {}
+  try {
+    req.parsedBody = raw ? JSON.parse(raw) : {}
+  } catch {
+    throw Object.assign(new Error('Request body is not valid JSON'), { status: 400 })
+  }
+  if (!req.parsedBody || typeof req.parsedBody !== 'object') throw Object.assign(new Error('Request body must be a JSON object'), { status: 400 })
+  return req.parsedBody
 }
 
 const nowNs = () => BigInt(Date.now()) * 1_000_000n
@@ -163,9 +170,28 @@ function cleanHistory(history) {
 
 const estTokens = (text) => BigInt(Math.ceil(text.length / 4))
 
+/**
+ * Sessions with a request in flight. One at a time per session: metering reads the running total,
+ * streams, then writes it back, so two overlapping requests (or a settle during a reply) would let
+ * one of them go uncharged.
+ */
+const busy = new Set()
+
 async function handleChat(req, res, origin) {
   const body = await readJson(req)
-  const { account_id, mode, prompt, history, anon_session } = body
+  const key = body.anon_session !== undefined ? `anon:${body.anon_session}` : `chain:${body.session_id}`
+  if (busy.has(key)) return send(res, 409, { code: 'GATEWAY_DOWN', error: 'A reply is already in progress for this session. Wait for it to finish.' }, origin)
+  busy.add(key)
+  try {
+    return await chatLocked(req, res, origin)
+  } finally {
+    busy.delete(key)
+  }
+}
+
+async function chatLocked(req, res, origin) {
+  const body = await readJson(req)
+  const { account_id, prompt, history, anon_session } = body
   let session_id = body.session_id
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(res, 400, { error: 'Prompt must be 1–8000 characters' }, origin)
   let s
@@ -190,7 +216,9 @@ async function handleChat(req, res, origin) {
   }
   if (nowNs() > BigInt(s.expires_at)) return send(res, 409, { code: 'SESSION_EXPIRED', error: 'This session has expired. End it to settle, or open a new one.' }, origin)
 
-  m ??= metering[session_id] ??= { metered: '0', tokens: 0, mode: mode === 'A' ? 'A' : 'B', requests: 0 }
+  // An on-chain session is always Mode B. Mode A exists only as a note-backed anonymous session.
+  m ??= metering[session_id] ??= { metered: '0', tokens: 0, mode: 'B', requests: 0 }
+  if (!anon) m.mode = 'B'
   const cap = BigInt(s.cap)
   const start = BigInt(m.metered)
   const messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...cleanHistory(history), { role: 'user', content: prompt }]
@@ -210,9 +238,9 @@ async function handleChat(req, res, origin) {
     }
   })
 
-  // Mode B: verify the enclave BEFORE the prompt leaves the gateway.
+  // Verify the enclave BEFORE the prompt leaves the gateway, in both modes.
   let attestation = null
-  if (m.mode === 'B' || anon) {
+  {
     try {
       attestation = await currentAttestation()
     } catch (e) {
@@ -288,7 +316,6 @@ async function handleChat(req, res, origin) {
   emit({ type: 'usage', tokens: Number(cost / YOCTO_PER_TOKEN), cost: cost.toString(), metered: m.metered })
 
   if (anon) emit({ type: 'proof', proof: notes.proofFor(anon, attestation?.verified ?? null) })
-  else if (m.mode === 'A') emit({ type: 'proof', proof: paymentPlaceholder(session_id, m.requests) })
   else if (attestation) emit({ type: 'proof', proof: await responseProof(attestation, end) })
   emit({ type: 'done' })
   res.end()
@@ -342,17 +369,11 @@ async function handleSettle(req, res, origin, sessionId) {
     return send(res, e.status ?? 502, { error: e.error ?? String(e.message ?? e) }, origin)
   }
   if (nowNs() > BigInt(s.settle_deadline)) return send(res, 409, { error: 'Settlement window has closed. Reclaim the session instead.' }, origin)
-  const m = metering[sessionId] ?? { metered: '0', tokens: 0, requests: 0 }
-  const spent = BigInt(m.metered) > BigInt(s.cap) ? BigInt(s.cap) : BigInt(m.metered)
-  const record = { session_id: String(sessionId), account_id, spent_yocto: spent.toString(), tokens: m.tokens, requests: m.requests, model: MODEL_ID, settled_at: new Date().toISOString() }
+  const key = `chain:${sessionId}`
+  if (busy.has(key)) return send(res, 409, { error: 'A reply is still in progress for this session. Stop it or wait, then end the session.' }, origin)
+  busy.add(key) // no reply may start while the settlement is on its way
   try {
-    record.receipt_hash = receiptHash(record)
-    const result = await gw.settleExact(sessionId, spent.toString(), record.receipt_hash)
-    delete metering[sessionId]
-    persist()
-    delete sessionKeys[sessionId]
-    persistKeys()
-    const hash = record.receipt_hash
+    const { spent, hash, result } = await settleMetered(sessionId, s)
     // The settle tx is final; reads can lag a block, so fall back to the values we just settled.
     const receipts = await gw.getReceipts(account_id).catch(() => [])
     const receipt = receipts.find((r) => r.session_id === String(sessionId)) ?? {
@@ -368,8 +389,59 @@ async function handleSettle(req, res, origin, sessionId) {
     return send(res, 200, { receipt, tx: result.tx }, origin)
   } catch (e) {
     return send(res, 502, { error: `Settlement failed: ${e instanceof Error ? e.message : e}` }, origin)
+  } finally {
+    busy.delete(key)
   }
 }
+
+/** Settle an on-chain session at what the gateway metered (never above the cap) and forget it. */
+async function settleMetered(sessionId, s) {
+  const m = metering[sessionId] ?? { metered: '0', tokens: 0, requests: 0 }
+  const spent = BigInt(m.metered) > BigInt(s.cap) ? BigInt(s.cap) : BigInt(m.metered)
+  const record = { session_id: String(sessionId), account_id: s.owner, spent_yocto: spent.toString(), tokens: m.tokens, requests: m.requests, model: MODEL_ID, settled_at: new Date().toISOString() }
+  const hash = receiptHash(record)
+  const result = await gw.settleExact(sessionId, spent.toString(), hash)
+  delete metering[sessionId]
+  persist()
+  delete sessionKeys[sessionId]
+  persistKeys()
+  return { spent, hash, result }
+}
+
+/**
+ * Sessions the user never ended. Without this, someone could chat, let the session expire and
+ * reclaim the full cap. Once a session with metered usage has expired, settle it ourselves while the
+ * settlement window (15 minutes after expiry) is still open.
+ */
+async function sweep() {
+  if (!cfg.gatewayId || !cfg.privateKey) return
+  for (const id of Object.keys(metering)) {
+    const key = `chain:${id}`
+    if (busy.has(key)) continue
+    busy.add(key)
+    try {
+      const s = await gw.getSession(id)
+      if (!s) {
+        // closed elsewhere (reclaimed, or settled from the CLI)
+        delete metering[id]
+        delete sessionKeys[id]
+        persist()
+        persistKeys()
+      } else if (nowNs() > BigInt(s.expires_at) && nowNs() <= BigInt(s.settle_deadline)) {
+        const { spent, result } = await settleMetered(id, s)
+        console.log(`auto-settled expired #${id} for ${s.owner}: ${spent} yocto (tx ${result.tx})`)
+      }
+    } catch (e) {
+      console.warn(`sweep #${id}: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      busy.delete(key)
+    }
+  }
+  notes.prune()
+}
+const SWEEP_MS = Number(process.env.SWEEP_MS || 60_000)
+setInterval(() => void sweep(), SWEEP_MS).unref()
+
 
 /** Turn a thrown error into a JSON reply (errors from notes.js are user-facing). */
 async function reply(res, origin, fn, failStatus = 400) {
@@ -418,7 +490,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && settle) return await handleSettle(req, res, origin, settle[1])
     send(res, 404, { error: 'Not found' }, origin)
   } catch (e) {
-    if (!res.headersSent) send(res, 500, { error: e instanceof Error ? e.message : String(e) }, origin)
+    if (!res.headersSent) send(res, e?.status ?? 500, { error: e instanceof Error ? e.message : String(e) }, origin)
     else res.end()
   }
 })

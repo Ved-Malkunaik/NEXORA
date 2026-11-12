@@ -34,6 +34,9 @@ test('ordinary chat and questions are not treated as transfers', () => {
     'send my regards to the team',
     'send 5 USDC to alice.near',
     'I sent 1 near yesterday',
+    "don't send 5 near to bob.near",
+    'never transfer 1 NEAR to scam.near',
+    'do not ever pay 2 near to bob.near',
   ])
     assert.equal(parseTransfer(p).kind, 'none', p)
 })

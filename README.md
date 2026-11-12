@@ -22,7 +22,7 @@ What is real and what is not, exactly:
 | Piece | State |
 |---|---|
 | Credits contract: deposit, withdraw, open, settle, reclaim, receipts | Real, on testnet |
-| Gateway metering and settlement | Real. The gateway charges what it metered, never more than the cap |
+| Gateway metering and settlement | Real. The gateway charges what it metered, never more than the cap, and settles sessions the user abandons |
 | Gateway caller authentication | Real. Every request is signed by a per-session chat key registered on-chain |
 | TEE attestation (Intel TDX + NVIDIA GPU) | Real, fetched and verified live from NEAR AI Cloud, no API key needed |
 | Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |

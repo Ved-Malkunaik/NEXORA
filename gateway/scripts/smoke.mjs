@@ -63,7 +63,15 @@ check('open_session returned an id and tx', !!sessionId && !!tx, `session ${sess
 if (!sessionId || !tx) process.exit(1)
 
 const chatBody = JSON.stringify({ session_id: sessionId, account_id: owner, mode: 'B', prompt: 'In one sentence: what is a TEE?' })
-const post = (path, body, headers = {}) => fetch(`${GW}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body })
+// One retry: after a long pause the client may reuse a connection the gateway has already closed.
+const post = async (path, body, headers = {}) => {
+  const go = () => fetch(`${GW}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers }, body })
+  try {
+    return await go()
+  } catch {
+    return go()
+  }
+}
 
 let r = await post('/v1/chat', chatBody)
 check('unsigned chat rejected', r.status === 401, String(r.status))
@@ -88,11 +96,39 @@ check(live ? 'TEE attestation + reply signature verified' : 'TEE attestation che
 r = await post('/v1/chat', chatBody, good)
 check('replayed request rejected', r.status === 401, String(r.status))
 
+// Two requests at once must not both be served on one running total (the second would go uncharged).
+const twin = (n) => JSON.stringify({ session_id: sessionId, account_id: owner, mode: 'B', prompt: `Reply with the single word ${n}.` })
+const [b1, b2] = [twin('one'), twin('two')]
+const pair = await Promise.all([post('/v1/chat', b1, sign('POST', '/v1/chat', sessionId, b1)), post('/v1/chat', b2, sign('POST', '/v1/chat', sessionId, b2))])
+await Promise.all(pair.map((x) => x.text()))
+check('overlapping requests: one served, one refused', pair.map((x) => x.status).sort().join() === '200,409', pair.map((x) => x.status).join())
+
 const settleBody = JSON.stringify({ account_id: owner })
 r = await post(`/v1/sessions/${sessionId}/settle`, settleBody, sign('POST', `/v1/sessions/${sessionId}/settle`, sessionId, settleBody))
 const settled = await r.json()
 check('settled on-chain with a receipt', r.status === 200 && settled.receipt?.outcome === 'Settled', settled.tx ?? settled.error)
 if (settled.receipt) console.log(`      spent ${settled.receipt.spent} yocto, refunded ${settled.receipt.refunded}, receipt ${settled.receipt.receipt_hash}`)
+
+// ---------- A session the user never ends must still be paid for ----------
+console.log('\nAbandoned session: chat, then walk away…')
+const ab = openSession({ cap: '5000000000000000000000', ttl_seconds: '60', client_key: `ed25519:${pub}` })
+check('short session opened', !!ab.sessionId && !!ab.tx, `session ${ab.sessionId}`)
+if (ab.sessionId) {
+  const abBody = JSON.stringify({ session_id: ab.sessionId, account_id: owner, mode: 'B', prompt: 'Say hello in five words.' })
+  r = await post('/v1/chat', abBody, { ...sign('POST', '/v1/chat', ab.sessionId, abBody), 'X-Nexora-Open-Tx': ab.tx })
+  await r.text()
+  check('chat on the short session', r.status === 200, String(r.status))
+  console.log('      waiting for it to expire and for the gateway to settle it on its own (up to 3 minutes)…')
+  const { JsonRpcProvider } = await import('near-api-js')
+  const rpc = new JsonRpcProvider({ url: process.env.NEAR_RPC_URL || 'https://rpc.testnet.fastnear.com' })
+  let receipt
+  for (let i = 0; i < 36 && !receipt; i++) {
+    await new Promise((res) => setTimeout(res, 5000))
+    const receipts = await rpc.callFunction({ contractId, method: 'get_receipts', args: { account_id: owner }, blockQuery: { finality: 'optimistic' } }).catch(() => [])
+    receipt = receipts.find((x) => x.session_id === ab.sessionId)
+  }
+  check('gateway settled the abandoned session with its metered cost', receipt?.outcome === 'Settled' && BigInt(receipt.spent) > 0n, receipt ? `spent ${receipt.spent} yocto` : 'no receipt')
+}
 
 // ---------- Mode A: buy a note in public, spend it with a zero-knowledge proof ----------
 console.log('\nMode A: buying a note…')

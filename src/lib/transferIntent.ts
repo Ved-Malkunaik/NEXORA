@@ -24,6 +24,8 @@ const AMOUNT_FIRST = new RegExp(`\\b${VERB}\\s+${AMOUNT}\\s*${UNIT}\\s+to\\s+${A
 const ACCOUNT_FIRST = new RegExp(`\\b${VERB}\\s+${ACCOUNT}\\s+${AMOUNT}\\s*${UNIT}`, 'i')
 /** Questions about transfers go to the model, they are not instructions. */
 const QUESTION = /^\s*(how|what|why|when|where|who|which|should|is|are|does|do|did|explain|tell me)\b|\?\s*$/i
+/** "don't send…", "never transfer…": the opposite of an instruction to pay. */
+const NEGATED = new RegExp(`\\b(?:don'?t|do\\s+not|never|not|won'?t|cannot|can'?t|shouldn'?t)\\s+(?:\\w+\\s+){0,2}${VERB}\\b`, 'i')
 
 /** NEAR account id rules: 2–64 chars, lowercase alphanumerics separated by single . _ or - */
 export function isValidAccountId(id: string): boolean {
@@ -40,7 +42,7 @@ export function nearToYocto(amount: string): string | null {
 }
 
 export function parseTransfer(prompt: string): TransferParse {
-  if (QUESTION.test(prompt)) return { kind: 'none' }
+  if (QUESTION.test(prompt) || NEGATED.test(prompt)) return { kind: 'none' }
   let rawAmount: string | undefined
   let rawTo: string | undefined
   const a = AMOUNT_FIRST.exec(prompt)

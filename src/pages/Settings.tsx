@@ -257,7 +257,7 @@ function CloseAccount({ accountId }: { accountId: string }) {
 function GatewayCard() {
   const client = useClient()
   const [tick, setTick] = useState(0)
-  const health = useClientQuery<GatewayHealth>(() => fetchGatewayHealth(), [tick])
+  const health = useClientQuery<GatewayHealth | null>((c) => (c.kind === 'live' ? fetchGatewayHealth() : Promise.resolve(null)), [tick])
   if (client.kind !== 'live') return null
   const h = health.data
   return (
