@@ -6,6 +6,8 @@ import { Dashboard } from './pages/Dashboard'
 import { Funding } from './pages/Funding'
 import { Receipts } from './pages/Receipts'
 import { Settings } from './pages/Settings'
+import { ClientProvider } from './client/ClientProvider'
+import { ToastProvider } from './components/toast'
 import { NearProvider } from './wallet/NearProvider'
 
 function NotFound() {
@@ -26,6 +28,8 @@ function NotFound() {
 export default function App() {
   return (
     <NearProvider>
+      <ClientProvider>
+        <ToastProvider>
       <BrowserRouter>
         <Guides />
         <Routes>
@@ -40,6 +44,8 @@ export default function App() {
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
+        </ToastProvider>
+      </ClientProvider>
     </NearProvider>
   )
 }

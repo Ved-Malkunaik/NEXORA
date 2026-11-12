@@ -14,7 +14,7 @@ Built for the NEAR Hackathon 2026, privacy track.
 |---|---|---|
 | 0 | Landing page (3D robot), navbar, app shell, wallet connect, session key, mainnet/testnet switch | Done |
 | 1 | Credits contract (Rust), tests, security pass, gateway stub | Done. Live on testnet at `credits.vedd.testnet` |
-| 2 | Every screen final, on mock data | Planned |
+| 2 | Every screen final, on mock data | Done. UI frozen; runs on a typed mock client (`src/client`) |
 | 3 | Contract and gateway wired to the UI | Planned |
 
 ## Run it
@@ -34,6 +34,13 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
 - **Account abstraction (session key):** the selector is set up with `createAccessKeyFor`, so sign-in adds a function-call access key that can only call `open_session` and `reclaim_session` on the credits contract. After that one approval, those calls need no wallet popup. Payable calls (`deposit`, `withdraw`) still go through the wallet, because function-call keys cannot attach deposits. The dashboard reads the key back from chain with `view_access_key_list`.
 - **Network switch:** `src/config/networks.ts` is the single config map (network, contract ID, RPC). Switching rebuilds the selector in place, with no page reload, and keeps each network's login in separate storage. On testnet the Funding page shows "mainnet only", because NEAR Intents has no testnet.
 - **Landing page:** the robot is built entirely in three.js 0.160 (`src/landing/robotScene.ts`). Scroll moves the camera from the full body to a close-up of the head, and the face switches to a quote mark in the last section.
+
+## How Level 2 works
+
+- **One client interface** ([src/client/types.ts](src/client/types.ts)) is all the screens talk to. It mirrors the deployed contract's JSON. Level 3 swaps the mock for the live contract, gateway, NEAR AI Cloud and Intents without touching the screens.
+- **The mock** ([src/client/mock.ts](src/client/mock.ts)) enforces the contract's rules and error messages, streams chat replies with per-token metering, and produces Mode B attestations and Mode A payment proofs, all labelled mock.
+- **Try it without a wallet:** on any app page, choose *Explore with a demo account*. Everything is simulated and nothing touches the chain.
+- **Developer panel** (Settings): simulate failures, move the mock clock forward to test expiry and reclaim, reset mock data.
 
 ## Testnet deployment
 

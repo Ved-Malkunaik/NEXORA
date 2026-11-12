@@ -1,16 +1,24 @@
-import { NetworkSwitch } from '../components/NetworkSwitch'
+import { useState } from 'react'
+import { useClient, useClientQuery, useClientVersion, useMockControls, useNow } from '../client/context'
+import type { PrivacyMode } from '../client/types'
+import { MODE_INFO, TTL_OPTIONS, prefs } from '../components/actions'
 import { PageHeader } from '../components/Layouts'
+import { NetworkSwitch } from '../components/NetworkSwitch'
 import { SessionKeyCard } from '../components/SessionKeyCard'
+import { useToast } from '../components/toast'
+import { AmountField, MockBadge, Modal, Near, formatTime, validateAmount } from '../components/ui'
 import { SESSION_KEY_METHODS } from '../config/networks'
 import { useNear } from '../wallet/context'
 import { useAccountInfo } from '../wallet/useAccountInfo'
 
 export function Settings() {
-  const { config, accountId, selectedWalletId, signOut, openModal, status } = useNear()
+  const { config, accountId, selectedWalletId, signOut, openModal, status, isDemo } = useNear()
   const info = useAccountInfo()
   return (
     <>
-      <PageHeader label="05 · Settings" title="Network and wallet" />
+      <PageHeader label="05 · Settings" title="Network, wallet and privacy">
+        <MockBadge />
+      </PageHeader>
       <div className="grid-2">
         <section className="card">
           <span className="label">Network</span>
@@ -20,7 +28,9 @@ export function Settings() {
           <ul className="kv kv-row small">
             <li>
               <span className="muted">Contract</span>
-              <code className="truncate">{config.contractId}</code>
+              <a className="mono truncate" href={`${config.explorerUrl}/address/${config.contractId}`} target="_blank" rel="noreferrer">
+                {config.contractId} ↗
+              </a>
             </li>
             <li>
               <span className="muted">RPC</span>
@@ -35,15 +45,19 @@ export function Settings() {
         <section className="card">
           <span className="label">Wallet</span>
           <h3 style={{ marginTop: 6 }}>{accountId ?? 'Not connected'}</h3>
-          <p className="muted small">{accountId ? `Connected with ${selectedWalletId}` : 'Connect to add a session key.'}</p>
+          <p className="muted small">
+            {isDemo ? 'Demo account: simulated, not on-chain.' : accountId ? `Connected with ${selectedWalletId}` : 'Connect to add a session key.'}
+          </p>
           <div className="row">
             {accountId ? (
               <>
-                <a className="btn" href={`${config.explorerUrl}/address/${accountId}`} target="_blank" rel="noreferrer">
-                  Explorer ↗
-                </a>
+                {!isDemo && (
+                  <a className="btn" href={`${config.explorerUrl}/address/${accountId}`} target="_blank" rel="noreferrer">
+                    Explorer ↗
+                  </a>
+                )}
                 <button className="btn" onClick={() => signOut()}>
-                  Disconnect
+                  {isDemo ? 'Exit demo' : 'Disconnect'}
                 </button>
               </>
             ) : (
@@ -54,7 +68,186 @@ export function Settings() {
           </div>
         </section>
       </div>
-      {accountId && <SessionKeyCard info={info} />}
+
+      <div className="grid-2">
+        <PrivacyDefaults />
+        {accountId ? <SessionKeyCard info={info} /> : <section className="card muted small">Connect a wallet to see your session key.</section>}
+      </div>
+
+      <div className="grid-2">
+        <DevPanel />
+        {accountId && <CloseAccount accountId={accountId} />}
+      </div>
     </>
+  )
+}
+
+function PrivacyDefaults() {
+  const toast = useToast()
+  const [mode, setMode] = useState<PrivacyMode>(prefs.mode)
+  const [cap, setCap] = useState(prefs.cap)
+  const [ttl, setTtl] = useState(prefs.ttl)
+  const capErr = validateAmount(cap, { min: 10n ** 21n, minLabel: 'At least 0.001 NEAR' })
+
+  return (
+    <section className="card">
+      <span className="label">Privacy defaults</span>
+      <h3 style={{ marginTop: 6 }}>For new sessions</h3>
+      <div className="field">
+        <span className="label">Default mode</span>
+        <div className="segmented" role="radiogroup">
+          {(['A', 'B'] as PrivacyMode[]).map((m) => (
+            <button key={m} role="radio" aria-checked={mode === m} onClick={() => setMode(m)}>
+              {MODE_INFO[m].short} · {MODE_INFO[m].title}
+            </button>
+          ))}
+        </div>
+      </div>
+      <AmountField label="Default cap" value={cap} onChange={setCap} presets={['0.01', '0.05', '0.1']} error={capErr} />
+      <div className="field">
+        <span className="label">Default duration</span>
+        <div className="chips">
+          {TTL_OPTIONS.map((o) => (
+            <button key={o.s} className={`chip ${ttl === o.s ? 'on' : ''}`} onClick={() => setTtl(o.s)}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <button
+        className="btn btn-primary"
+        disabled={!!capErr || !cap}
+        onClick={() => {
+          prefs.setMode(mode)
+          prefs.setCap(cap)
+          prefs.setTtl(ttl)
+          toast.ok('Defaults saved', 'New sessions will start with these settings.')
+        }}
+      >
+        Save defaults
+      </button>
+      <p className="small muted" style={{ marginTop: 10 }}>Stored in this browser only.</p>
+    </section>
+  )
+}
+
+function DevPanel() {
+  const mock = useMockControls()
+  const toast = useToast()
+  useClientVersion()
+  const now = useNow()
+  const [confirmReset, setConfirmReset] = useState(false)
+  if (!mock) return null
+  const offset = mock.getTimeOffsetMs()
+  return (
+    <section className="card dev-card">
+      <div className="card-head">
+        <span className="label">Developer · mock client</span>
+        <MockBadge />
+      </div>
+      <p className="muted small">Level 2 runs on simulated data so every screen and state can be tried. These controls disappear when the live client lands in Level 3.</p>
+      <label className="toggle">
+        <input type="checkbox" checked={mock.failing()} onChange={(e) => mock.setFailing(e.target.checked)} />
+        <span>Simulate network and gateway failures</span>
+      </label>
+      <div className="field">
+        <span className="label">Mock clock: {formatTime(now)}{offset ? ` (+${Math.round(offset / 60000)} min)` : ''}</span>
+        <div className="chips">
+          {[
+            ['+5 min', 300],
+            ['+1 hour', 3600],
+            ['+25 hours', 90_000],
+          ].map(([l, s]) => (
+            <button key={l} className="chip" onClick={() => (mock.advanceTime(s as number), toast.info('Time moved', `Mock clock advanced ${l}.`))}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <p className="small muted">Move time forward to see sessions expire and become reclaimable.</p>
+      </div>
+      <button className="btn" onClick={() => setConfirmReset(true)}>
+        Reset mock data
+      </button>
+      <Modal
+        open={confirmReset}
+        onClose={() => setConfirmReset(false)}
+        title="Reset mock data?"
+        label="Developer"
+        footer={
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              mock.reset()
+              setConfirmReset(false)
+              toast.ok('Mock data reset')
+            }}
+          >
+            Reset
+          </button>
+        }
+      >
+        <p>This clears simulated balances, sessions, chats and receipts on this network, in this browser. Nothing on-chain changes.</p>
+      </Modal>
+    </section>
+  )
+}
+
+function CloseAccount({ accountId }: { accountId: string }) {
+  const client = useClient()
+  const toast = useToast()
+  const b = useClientQuery((c) => c.getBalance(accountId), [accountId])
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const bal = b.data
+  const blocker = !bal
+    ? null
+    : bal.open_sessions.length > 0
+      ? 'End your open sessions first.'
+      : BigInt(bal.available) > 0n
+        ? 'Withdraw your available credits first.'
+        : null
+
+  if (!bal) return null
+  return (
+    <section className="card danger-card">
+      <span className="label">Credits account</span>
+      <h3 style={{ marginTop: 6 }}>Close and get the reserve back</h3>
+      <p className="muted small">
+        Removes your account from the contract and returns the <Near yocto={bal.storage_reserve} /> storage reserve. Receipts are deleted with it.
+      </p>
+      <p className={`small ${blocker ? 'error' : 'muted'}`}>{blocker ?? 'Ready to close.'}</p>
+      <button className="btn" disabled={!!blocker} onClick={() => setOpen(true)}>
+        Close credits account
+      </button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        busy={busy}
+        label="Credits account"
+        title="Close your credits account?"
+        footer={
+          <button
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              try {
+                await client.unregister(accountId)
+                toast.ok('Account closed', 'Your storage reserve is on its way back.')
+                setOpen(false)
+              } catch (e) {
+                toast.error('Could not close account', e instanceof Error ? e.message : String(e))
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            {busy ? 'Waiting for wallet…' : 'Close account'}
+          </button>
+        }
+      >
+        <p>Your receipt history in the contract is deleted. You can register again later with a new deposit.</p>
+      </Modal>
+    </section>
   )
 }

@@ -70,6 +70,10 @@ function createSelector(cfg: NetworkConfig) {
   })
 }
 
+/** Mock-only identity so the app can be explored without a wallet. Never sent on-chain. */
+export const DEMO_ACCOUNT_ID = 'demo-user.mock'
+const DEMO_KEY = 'nexora:demo'
+
 export function NearProvider({ children }: { children: ReactNode }) {
   const [networkId, setNetworkIdState] = useState<NetworkId>(loadNetworkId)
   const [selector, setSelector] = useState<WalletSelector | null>(null)
@@ -79,6 +83,22 @@ export function NearProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<NearContextValue['status']>('loading')
   const [error, setError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
+  const [demo, setDemoState] = useState(() => {
+    try {
+      return sessionStorage.getItem(DEMO_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const setDemo = useCallback((on: boolean) => {
+    try {
+      if (on) sessionStorage.setItem(DEMO_KEY, '1')
+      else sessionStorage.removeItem(DEMO_KEY)
+    } catch {
+      /* storage unavailable: demo lasts until reload */
+    }
+    setDemoState(on)
+  }, [])
 
   const config = NETWORKS[networkId]
 
@@ -137,13 +157,15 @@ export function NearProvider({ children }: { children: ReactNode }) {
   )
 
   const signOut = useCallback(async () => {
+    setDemo(false)
     if (!selector || !selector.isSignedIn()) return
     const wallet = await selector.wallet()
     await wallet.signOut()
-  }, [selector])
+  }, [selector, setDemo])
 
   const value = useMemo<NearContextValue>(() => {
     const active = accounts.find((a) => a.active) ?? accounts[0]
+    const isDemo = !active && demo
     return {
       networkId,
       config,
@@ -152,7 +174,9 @@ export function NearProvider({ children }: { children: ReactNode }) {
       error,
       selector,
       modules,
-      accountId: active?.accountId ?? null,
+      accountId: active?.accountId ?? (isDemo ? DEMO_ACCOUNT_ID : null),
+      isDemo,
+      enterDemo: () => setDemo(true),
       selectedWalletId,
       signIn,
       signOut,
@@ -160,7 +184,7 @@ export function NearProvider({ children }: { children: ReactNode }) {
       openModal: () => setModalOpen(true),
       closeModal: () => setModalOpen(false),
     }
-  }, [networkId, config, setNetwork, status, error, selector, modules, accounts, selectedWalletId, signIn, signOut, modalOpen])
+  }, [networkId, config, setNetwork, status, error, selector, modules, accounts, selectedWalletId, signIn, signOut, modalOpen, demo, setDemo])
 
   return <NearContext.Provider value={value}>{children}</NearContext.Provider>
 }

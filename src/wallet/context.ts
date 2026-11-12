@@ -11,6 +11,9 @@ export interface NearContextValue {
   selector: WalletSelector | null
   modules: ModuleState[]
   accountId: string | null
+  /** True when using the mock-only demo identity instead of a wallet. */
+  isDemo: boolean
+  enterDemo: () => void
   selectedWalletId: string | null
   signIn: (walletId: string) => Promise<void>
   signOut: () => Promise<void>

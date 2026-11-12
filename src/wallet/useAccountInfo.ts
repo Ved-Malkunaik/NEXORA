@@ -4,7 +4,7 @@ import { useNear } from './context'
 
 /** On-chain view of the signed-in account: balance and the scoped session key(s). */
 export function useAccountInfo() {
-  const { accountId, config } = useNear()
+  const { accountId, config, isDemo } = useNear()
   const [account, setAccount] = useState<AccountView | null>(null)
   const [sessionKeys, setSessionKeys] = useState<AccessKeyInfo[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -12,7 +12,7 @@ export function useAccountInfo() {
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
-    if (!accountId) {
+    if (!accountId || isDemo) {
       setAccount(null)
       setSessionKeys(null)
       return
@@ -35,7 +35,7 @@ export function useAccountInfo() {
     return () => {
       cancelled = true
     }
-  }, [accountId, config, tick])
+  }, [accountId, config, tick, isDemo])
 
   const refresh = useCallback(() => setTick((t) => t + 1), [])
   return { account, sessionKeys, loading, error, refresh }
