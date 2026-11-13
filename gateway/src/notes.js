@@ -18,10 +18,8 @@
 // What the gateway can and cannot tell is listed in docs/SECURITY_REPORT.md (it still sees the IP
 // address and the prompt, and a pool with few notes hides little).
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
 import { Group, verifyProof } from '@semaphore-protocol/core'
-import { parseClientKey, readOpenTx, verifyRequest } from './auth.js'
+import { AUTH_WINDOW_MS, parseClientKey, readOpenTx, verifyRequest } from './auth.js'
 import { receiptHash } from './settlement.js'
 
 /** BN254 scalar field: commitments, nullifiers and messages are field elements. */
@@ -37,59 +35,86 @@ export const ANON_TTL_MS = 24 * 60 * 60_000
 /** A proof may be built against a slightly older list; accept this many recent roots. */
 const ROOT_HISTORY = 64
 
+// Store keys (see store.js)
+const K = {
+  leaves: 'notes:leaves', // list of { commitment, session_id, open_tx, settle_tx }
+  sold: (sid) => `notes:sold:${sid}`, // purchase session id -> commitment
+  commitment: (c) => `notes:commitment:${c}`,
+  nullifier: (n) => `notes:nullifier:${n}`, // spent markers, kept forever
+  anon: (id) => `anon:${id}`, // anonymous session record, expires with the session
+  registerLock: 'lock:notes:register',
+  sig: (s) => `sig:${s}`,
+}
+
 export function parseCommitment(v) {
   if (typeof v !== 'string' || !/^[1-9]\d{0,77}$/.test(v)) return null
   const n = BigInt(v)
   return n < FIELD ? n : null
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
 /**
  * @param {object} o
- * @param {string} o.file          JSON state file (commitments, spent nullifiers, anonymous sessions)
+ * @param {object} o.store         see store.js
  * @param {string} o.priceYocto    fixed note price
  * @param {bigint} o.yoctoPerToken
  * @param {object} [o.chain]       { rpcUrl, contractId, getSession, settleExact }: needed to sell notes
  * @param {Function} [o.verify]    proof verifier (injectable for tests)
  * @param {Function} [o.readTx]    reads a purchase transaction's arguments (injectable for tests)
  */
-export function createNotes({ file, priceYocto, yoctoPerToken, chain, verify = verifyProof, readTx = readOpenTx, preload, now = () => Date.now() }) {
-  let state = { leaves: [], nullifiers: {}, sessions: {} }
-  try {
-    state = { ...state, ...JSON.parse(readFileSync(file, 'utf8')) }
-  } catch {
-    /* first run */
-  }
-  if (preload) state.leaves = preload // tests only
-  const save = () => {
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(state, null, 2))
-  }
+export function createNotes({ store, priceYocto, yoctoPerToken, chain, verify = verifyProof, readTx = readOpenTx, now = () => Date.now() }) {
+  const tokens = Number(BigInt(priceYocto) / yoctoPerToken)
 
-  const group = new Group()
+  // The Merkle tree is rebuilt from the stored list, and extended as other instances add notes.
+  let group = new Group()
   /** root (decimal) -> number of notes in the list when it was the root */
   const roots = new Map()
-  const addLeaf = (commitment) => {
-    group.addMember(BigInt(commitment))
-    roots.set(group.root.toString(), group.size)
-    if (roots.size > ROOT_HISTORY) roots.delete(roots.keys().next().value)
+  let known = 0
+  async function leaves() {
+    const list = await store.lrange(K.leaves)
+    for (const l of list.slice(known)) {
+      group.addMember(BigInt(l.commitment))
+      roots.set(group.root.toString(), group.size)
+      if (roots.size > ROOT_HISTORY) roots.delete(roots.keys().next().value)
+    }
+    if (list.length < known) {
+      // The list was reset (e.g. a new database): start over.
+      group = new Group()
+      roots.clear()
+      known = 0
+      return leaves()
+    }
+    known = list.length
+    return list
   }
-  for (const l of state.leaves) addLeaf(l.commitment)
 
-  const seenSignatures = new Map()
-  const tokens = Number(BigInt(priceYocto) / yoctoPerToken)
-  let queue = Promise.resolve()
-  /** Note sales run one at a time so the list and the chain cannot disagree. */
-  const serial = (fn) => (queue = queue.then(fn, fn))
+  async function info() {
+    const list = await leaves()
+    return { price: priceYocto, tokens, scope: NOTE_SCOPE, root: group.size ? group.root.toString() : null, commitments: list.map((l) => l.commitment) }
+  }
 
-  function info() {
-    return { price: priceYocto, tokens, scope: NOTE_SCOPE, root: group.size ? group.root.toString() : null, commitments: state.leaves.map((l) => l.commitment) }
+  /** One note sale at a time across all instances, so the list and the chain cannot disagree. */
+  async function withRegisterLock(fn) {
+    for (let i = 0; i < 40; i++) {
+      if (await store.set(K.registerLock, now(), { nx: true, px: 60_000 })) {
+        try {
+          return await fn()
+        } finally {
+          await store.del(K.registerLock)
+        }
+      }
+      await sleep(250)
+    }
+    throw new Error('The gateway is busy selling another note. Try again in a moment.')
   }
 
   /** Sell a note: check the on-chain purchase, take payment, publish the commitment. */
   function register({ accountId, sessionId, txHash }) {
-    return serial(async () => {
-      const sold = state.leaves.find((l) => l.session_id === String(sessionId))
-      if (sold) return { commitment: sold.commitment, index: state.leaves.indexOf(sold), anonymity_set: state.leaves.length }
+    return withRegisterLock(async () => {
+      const list = await leaves()
+      const already = await store.get(K.sold(sessionId))
+      if (already) return { commitment: already, index: list.findIndex((l) => l.commitment === already), anonymity_set: list.length }
       const s = await chain.getSession(sessionId)
       if (!s) throw new Error('That session is not open. A note is bought with a fresh session.')
       if (s.owner !== accountId) throw new Error('That session belongs to another account.')
@@ -98,14 +123,15 @@ export function createNotes({ file, priceYocto, yoctoPerToken, chain, verify = v
       const c = parseCommitment(args.note_commitment)
       if (c === null) throw new Error('That transaction does not carry a valid note commitment.')
       const commitment = c.toString()
-      if (state.leaves.some((l) => l.commitment === commitment)) throw new Error('That note commitment is already in the list.')
+      if (await store.get(K.commitment(commitment))) throw new Error('That note commitment is already in the list.')
       // Payment: the whole cap goes to the operator. The receipt hash commits to the note, not to usage.
       const hash = receiptHash({ type: 'zk-note', commitment, session_id: String(sessionId) })
       const { tx } = await chain.settleExact(sessionId, priceYocto, hash)
-      state.leaves.push({ commitment, session_id: String(sessionId), open_tx: txHash, settle_tx: tx ?? null })
-      addLeaf(commitment)
-      save()
-      return { commitment, index: state.leaves.length - 1, anonymity_set: state.leaves.length, settle_tx: tx ?? null }
+      await store.set(K.commitment(commitment), String(sessionId))
+      await store.set(K.sold(sessionId), commitment)
+      const n = await store.rpush(K.leaves, { commitment, session_id: String(sessionId), open_tx: txHash, settle_tx: tx ?? null })
+      await leaves()
+      return { commitment, index: n - 1, anonymity_set: n, settle_tx: tx ?? null }
     })
   }
 
@@ -115,6 +141,7 @@ export function createNotes({ file, priceYocto, yoctoPerToken, chain, verify = v
     if (!key) throw new Error('Missing or malformed session key')
     const keyHex = Buffer.from(key).toString('hex')
     if (!proof || typeof proof !== 'object' || !Array.isArray(proof.points)) throw new Error('Missing proof')
+    await leaves()
     const checks = []
     const check = (name, ok, detail) => {
       checks.push({ name, ok: !!ok, detail })
@@ -132,27 +159,35 @@ export function createNotes({ file, priceYocto, yoctoPerToken, chain, verify = v
     }
     check('Zero-knowledge proof valid', valid, 'Groth16 proof (Semaphore v4): the prover knows the secret of one paid note, without revealing which')
     const nullifier = String(proof.nullifier)
-    check('Note not spent before', !(nullifier in state.nullifiers), 'This note’s nullifier has never been seen')
+    // Atomic: of two simultaneous spends of one note, exactly one gets through.
+    const fresh = await store.set(K.nullifier(nullifier), now(), { nx: true })
+    check('Note not spent before', fresh, 'This note’s nullifier has never been seen')
 
-    state.nullifiers[nullifier] = now()
     const id = randomBytes(16).toString('hex')
-    state.sessions[id] = { key: keyHex, metered: '0', tokens: 0, requests: 0, mode: 'A', expires_at: now() + ANON_TTL_MS, nullifier, root: String(proof.merkleTreeRoot), anonymity_set: setSize, checks }
-    save()
-    return { session_id: id, cap: priceYocto, tokens, expires_at: state.sessions[id].expires_at, anonymity_set: setSize }
+    const rec = { key: keyHex, metered: '0', tokens: 0, requests: 0, mode: 'A', expires_at: now() + ANON_TTL_MS, nullifier, root: String(proof.merkleTreeRoot), anonymity_set: setSize, checks }
+    await store.set(K.anon(id), rec, { px: ANON_TTL_MS })
+    return { session_id: id, cap: priceYocto, tokens, expires_at: rec.expires_at, anonymity_set: setSize }
   }
 
-  /** Authenticate a request for an anonymous session. Returns its record. */
-  function auth(id, req) {
-    const rec = typeof id === 'string' ? state.sessions[id] : undefined
+  /** Authenticate a request for an anonymous session (signature, then single use). Returns its record. */
+  async function auth(id, req) {
+    const rec = typeof id === 'string' && /^[0-9a-f]{32}$/.test(id) ? await store.get(K.anon(id)) : null
     if (!rec) throw new Error('This anonymous session is closed or unknown.')
     const path = new URL(req.url ?? '/', 'http://gateway').pathname
-    verifyRequest({ publicKeyHex: rec.key, method: req.method, path, sessionId: id, ts: req.headers['x-nexora-ts'], sigHex: req.headers['x-nexora-sig'], body: req.rawBody ?? '', seen: seenSignatures })
+    const sigHex = req.headers['x-nexora-sig']
+    verifyRequest({ publicKeyHex: rec.key, method: req.method, path, sessionId: id, ts: req.headers['x-nexora-ts'], sigHex, body: req.rawBody ?? '' })
+    if (!(await store.set(K.sig(sigHex), 1, { nx: true, px: AUTH_WINDOW_MS * 2 }))) throw new Error('This request was already used')
     return rec
   }
 
-  function close(id) {
-    delete state.sessions[id]
-    save()
+  /** Save an anonymous session's metering, keeping its original expiry. */
+  async function saveSession(id, rec) {
+    const left = rec.expires_at - now()
+    if (left > 0) await store.set(K.anon(id), rec, { px: left })
+  }
+
+  async function close(id) {
+    await store.del(K.anon(id))
   }
 
   /** What the chat panel shows for a request paid with a note. */
@@ -171,14 +206,10 @@ export function createNotes({ file, priceYocto, yoctoPerToken, chain, verify = v
     }
   }
 
-  const metered = (id) => state.sessions[id]?.metered
-
-  /** Drop anonymous sessions that have expired. Spent nullifiers are kept forever. */
-  function prune() {
-    const before = Object.keys(state.sessions).length
-    for (const [id, rec] of Object.entries(state.sessions)) if (now() > rec.expires_at) delete state.sessions[id]
-    if (Object.keys(state.sessions).length !== before) save()
+  async function metered(id) {
+    if (!/^[0-9a-f]{32}$/.test(String(id))) return undefined
+    return (await store.get(K.anon(id)))?.metered
   }
 
-  return { info, register, redeem, auth, close, proofFor, metered, prune, save, priceYocto, tokens }
+  return { info, register, redeem, auth, saveSession, close, proofFor, metered, priceYocto, tokens }
 }

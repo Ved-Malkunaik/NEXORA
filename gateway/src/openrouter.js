@@ -109,32 +109,28 @@ export async function* streamOpenRouter({ apiKey, models, messages, maxTokens = 
 }
 
 /**
- * Sliding-window limiter for the account-wide free-tier limits. `take()` returns null when a call is
- * allowed (and counts it), or a user-facing reason when it is not.
+ * Account-wide free-tier limits, counted in the shared store so every gateway instance sees the same
+ * numbers. `take()` resolves to null when a call is allowed (and counts it), or a user-facing reason.
+ * Minutes are fixed windows; days follow OpenRouter's reset at 00:00 UTC.
  */
-export function createLimiter({ perMinute = 18, perDay = 1000, now = () => Date.now() } = {}) {
-  let minute = []
-  let day = { key: '', count: 0 }
-  const dayKey = () => new Date(now()).toISOString().slice(0, 10) // OpenRouter resets daily at UTC midnight
+export function createLimiter({ store, perMinute = 18, perDay = 1000, now = () => Date.now() }) {
+  const keys = () => {
+    const t = now()
+    return { minute: `rl:m:${Math.floor(t / 60_000)}`, day: `rl:d:${new Date(t).toISOString().slice(0, 10)}` }
+  }
   return {
-    take() {
-      const t = now()
-      minute = minute.filter((x) => t - x < 60_000)
-      if (day.key !== dayKey()) day = { key: dayKey(), count: 0 }
-      if (day.count >= perDay) return 'The free model’s daily request limit is used up. It resets at 00:00 UTC. Nothing was charged.'
-      if (minute.length >= perMinute) return 'The free model is busy right now. Try again in a minute. Nothing was charged.'
-      minute.push(t)
-      day.count++
+    async take() {
+      const k = keys()
+      const [day, minute] = await Promise.all([store.get(k.day), store.get(k.minute)])
+      if (Number(day ?? 0) >= perDay) return 'The free model’s daily request limit is used up. It resets at 00:00 UTC. Nothing was charged.'
+      if (Number(minute ?? 0) >= perMinute) return 'The free model is busy right now. Try again in a minute. Nothing was charged.'
+      await Promise.all([store.incr(k.minute, 120_000), store.incr(k.day, 2 * 86_400_000)])
       return null
     },
-    /** Give back a call that never reached the model (e.g. the user left before it started). */
-    refund() {
-      minute.pop()
-      if (day.count > 0) day.count--
-    },
-    stats() {
-      const t = now()
-      return { last_minute: minute.filter((x) => t - x < 60_000).length, today: day.key === dayKey() ? day.count : 0, per_minute: perMinute, per_day: perDay }
+    async stats() {
+      const k = keys()
+      const [day, minute] = await Promise.all([store.get(k.day), store.get(k.minute)])
+      return { last_minute: Number(minute ?? 0), today: Number(day ?? 0), per_minute: perMinute, per_day: perDay }
     },
   }
 }

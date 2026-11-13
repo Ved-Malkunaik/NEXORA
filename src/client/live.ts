@@ -33,7 +33,12 @@ import type {
 } from './types'
 
 const TGAS = 10n ** 12n
-export const GATEWAY_URL: string = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:8787'
+/**
+ * Where the gateway is. Production builds use the same site's /api (the gateway runs as a Vercel
+ * Function); local development uses the standalone server. VITE_GATEWAY_URL overrides both.
+ */
+export const GATEWAY_URL: string = import.meta.env.VITE_GATEWAY_URL || (import.meta.env.PROD ? '/api' : 'http://localhost:8787')
+const GATEWAY_HINT = import.meta.env.PROD ? 'Try again in a moment.' : 'Start it with: cd gateway && npm start'
 
 interface ChainSession {
   session_id: string
@@ -212,7 +217,7 @@ export class LiveClient implements NexoraClient {
     try {
       res = await fetch(`${GATEWAY_URL}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } })
     } catch {
-      throw new Error(`Gateway not reachable at ${GATEWAY_URL}. Start it with: cd gateway && npm start`)
+      throw new Error(`Gateway not reachable at ${GATEWAY_URL}. ${GATEWAY_HINT}`)
     }
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error ?? `Gateway error ${res.status}`)
@@ -487,7 +492,7 @@ export class LiveClient implements NexoraClient {
     } catch {
       reply.error = 'Gateway not reachable'
       save()
-      yield { type: 'error', code: 'GATEWAY_DOWN', message: `The gateway is not reachable at ${GATEWAY_URL}. Start it with: cd gateway && npm start` }
+      yield { type: 'error', code: 'GATEWAY_DOWN', message: `The gateway is not reachable at ${GATEWAY_URL}. ${GATEWAY_HINT}` }
       return
     }
     if (!res.ok || !res.body) {
@@ -603,7 +608,8 @@ export interface GatewayHealth {
 
 export async function fetchGatewayHealth(): Promise<GatewayHealth> {
   const r = await fetch(`${GATEWAY_URL}/v1/health`).catch(() => {
-    throw new Error('Not reachable. Start it with: cd gateway && npm start')
+    throw new Error(`Not reachable. ${GATEWAY_HINT}`)
   })
+  if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error ?? `Gateway error ${r.status}`)
   return r.json()
 }

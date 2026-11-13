@@ -121,12 +121,14 @@ if (ab.sessionId) {
   r = await post('/v1/chat', abBody, { ...sign('POST', '/v1/chat', ab.sessionId, abBody), 'X-Nexora-Open-Tx': ab.tx })
   await r.text()
   check('chat on the short session', r.status === 200, String(r.status))
-  console.log('      waiting for it to expire and for the gateway to settle it on its own (up to 3 minutes)…')
+  console.log('      waiting for it to expire and for the gateway to settle it on its own (up to 3 minutes; light traffic meanwhile)…')
   const { JsonRpcProvider } = await import('near-api-js')
   const rpc = new JsonRpcProvider({ url: process.env.NEAR_RPC_URL || 'https://rpc.testnet.fastnear.com' })
   let receipt
   for (let i = 0; i < 36 && !receipt; i++) {
     await new Promise((res) => setTimeout(res, 5000))
+    // On Vercel there is no always-on process: the cleanup rides on ordinary requests, so keep some coming.
+    await fetch(`${GW}/v1/health`).catch(() => {})
     const receipts = await rpc.callFunction({ contractId, method: 'get_receipts', args: { account_id: owner }, blockQuery: { finality: 'optimistic' } }).catch(() => [])
     receipt = receipts.find((x) => x.session_id === ab.sessionId)
   }

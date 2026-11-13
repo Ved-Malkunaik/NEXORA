@@ -128,7 +128,8 @@ docs/                     workflow, contract spec, security report
 ## Deploy
 
 - **Frontend:** any static host works. `vercel.json` rewrites all routes to `index.html` for client-side routing. Set `VITE_GATEWAY_URL` to the gateway's HTTPS address before building.
-- **Gateway:** a long-running Node service with a persistent disk (it keeps the paid-notes list and spent-note markers in `gateway/.data`). Step-by-step for a free Oracle Cloud VM, with a one-command setup script: [deploy/oracle/README.md](deploy/oracle/README.md).
+- **Vercel, all in one (recommended):** the gateway runs as a Vercel Function at `/api` on the same domain, with its state in a free Upstash Redis database. Step by step: [deploy/vercel/README.md](deploy/vercel/README.md).
+- **Or a server:** the gateway also runs as a standalone Node service (`npm start` in `gateway/`), keeping its state in `gateway/.data/store.json` or in Redis. For a VM: [deploy/oracle/README.md](deploy/oracle/README.md).
 
 ## Privacy limits
 

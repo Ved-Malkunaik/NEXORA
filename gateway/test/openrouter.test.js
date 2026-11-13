@@ -67,18 +67,19 @@ test('errors become clear messages', async () => {
 
 test('the limiter enforces per-minute and per-day caps and resets', async () => {
   const { createLimiter } = await import('../src/openrouter.js')
+  const { createMemoryStore } = await import('../src/store.js')
   let t = Date.UTC(2026, 10, 13, 23, 59, 0)
-  const lim = createLimiter({ perMinute: 2, perDay: 3, now: () => t })
-  assert.equal(lim.take(), null)
-  assert.equal(lim.take(), null)
-  assert.match(lim.take(), /busy right now/)
+  const lim = createLimiter({ store: createMemoryStore({ now: () => t }), perMinute: 2, perDay: 3, now: () => t })
+  assert.equal(await lim.take(), null)
+  assert.equal(await lim.take(), null)
+  assert.match(await lim.take(), /busy right now/)
   t += 61_000 // next minute, and past UTC midnight: the day count resets too
-  assert.equal(lim.take(), null)
-  assert.equal(lim.stats().today, 1)
-  assert.equal(lim.take(), null)
+  assert.equal(await lim.take(), null)
+  assert.equal((await lim.stats()).today, 1)
+  assert.equal(await lim.take(), null)
   t += 61_000
-  assert.equal(lim.take(), null)
-  assert.match(lim.take(), /daily request limit/)
+  assert.equal(await lim.take(), null)
+  assert.match(await lim.take(), /daily request limit/)
 })
 
 test('model list: comma-separated, at most three', async () => {
