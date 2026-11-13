@@ -154,14 +154,37 @@ export function createRedisStore({ url, token, prefix = 'nexora:', fetchImpl = f
 }
 
 /**
- * Redis if configured (Vercel's Upstash integration sets KV_REST_API_URL / KV_REST_API_TOKEN; Upstash's
- * own names are UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN), otherwise a local file.
+ * Find the Upstash REST URL and token. Vercel's integration names them KV_REST_API_URL/_TOKEN, or with
+ * a custom prefix (e.g. STORAGE_KV_REST_API_URL); Upstash's own names are UPSTASH_REDIS_REST_URL/_TOKEN.
  */
+export function redisFromEnv(env) {
+  const pairs = [['KV_REST_API_URL', 'KV_REST_API_TOKEN'], ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN']]
+  for (const [u, t] of pairs) if (env[u] && env[t]) return { url: env[u], token: env[t] }
+  // Prefixed names: <PREFIX>_KV_REST_API_URL with its matching <PREFIX>_KV_REST_API_TOKEN.
+  for (const name of Object.keys(env).sort()) {
+    for (const [u, t] of pairs) {
+      if (name.endsWith(`_${u}`) && env[name]) {
+        const tokenName = name.slice(0, -u.length) + t
+        if (env[tokenName]) return { url: env[name], token: env[tokenName] }
+      }
+    }
+  }
+  return null
+}
+
+/** Redis if configured (see redisFromEnv), otherwise a local file. */
 export function storeFromEnv(env, filePath) {
-  const url = env.KV_REST_API_URL || env.UPSTASH_REDIS_REST_URL
-  const token = env.KV_REST_API_TOKEN || env.UPSTASH_REDIS_REST_TOKEN
-  if (url && token) return createRedisStore({ url, token, prefix: env.STORE_PREFIX || 'nexora:' })
-  if (env.VERCEL) throw new Error('No Redis configured. On Vercel the gateway needs Upstash Redis (KV_REST_API_URL and KV_REST_API_TOKEN).')
+  const redis = redisFromEnv(env)
+  if (redis) return createRedisStore({ ...redis, prefix: env.STORE_PREFIX || 'nexora:' })
+  if (env.VERCEL) {
+    // Name the variables that look related (names only, never values) to make the fix obvious.
+    const seen = Object.keys(env).filter((k) => /KV|REDIS|UPSTASH/i.test(k))
+    throw new Error(
+      `No Redis configured. On Vercel the gateway needs Upstash Redis: KV_REST_API_URL and KV_REST_API_TOKEN. ${
+        seen.length ? `Related variables found: ${seen.join(', ')}.` : 'No related variables found: connect the database to this project, then redeploy.'
+      }`,
+    )
+  }
   if (!filePath) throw new Error('No Redis configured (KV_REST_API_URL and KV_REST_API_TOKEN), and no file to keep state in.')
   return createFileStore(filePath)
 }

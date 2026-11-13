@@ -149,6 +149,8 @@ test('storeFromEnv: Redis when configured, a file otherwise, and never a file on
   assert.equal(storeFromEnv({ UPSTASH_REDIS_REST_URL: 'https://x', UPSTASH_REDIS_REST_TOKEN: 't' }).kind, 'redis')
   assert.equal(storeFromEnv({}, join(mkdtempSync(join(tmpdir(), 'nexora-store-')), 's.json')).kind, 'file')
   assert.throws(() => storeFromEnv({ VERCEL: '1' }), /needs Upstash Redis/)
+  assert.equal(storeFromEnv({ STORAGE_KV_REST_API_URL: 'https://x', STORAGE_KV_REST_API_TOKEN: 't' }).kind, 'redis', 'custom prefix')
+  assert.throws(() => storeFromEnv({ VERCEL: '1', KV_URL: 'redis://secret' }), (e) => /Related variables found: KV_URL\./.test(e.message) && !e.message.includes('secret'))
 })
 
 test('Vercel requests are mapped back to gateway paths', () => {
