@@ -54,6 +54,9 @@ export async function* streamOpenRouter({ apiKey, models, messages, maxTokens = 
     messages,
     stream: true,
     max_tokens: maxTokens,
+    // Some free models (e.g. ERNIE 5.5 Flash) always reason before answering and count that against
+    // max_tokens. Keep it short and out of the stream; models without reasoning ignore this.
+    reasoning: { effort: 'low', exclude: true },
     ...(dataCollection === 'deny' ? { provider: { data_collection: 'deny' } } : {}),
   }
   const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {

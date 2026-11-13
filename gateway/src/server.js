@@ -317,6 +317,10 @@ async function chatLocked(req, res, origin) {
     if (!closed && !capHit) failed = e
   }
 
+  // A real model that finished without any visible text (e.g. it spent its whole allowance reasoning).
+  if (LIVE_MODEL && !failed && !capHit && !closed && !text.trim())
+    failed = new UpstreamError('The model returned no text. If this session is near its cap, open a new one; otherwise try again.')
+
   // Charge what was used (the provider's own count when it reports one), never above the cap.
   const used = end?.usage?.total_tokens ? BigInt(end.usage.total_tokens) : promptTokens + outTokens
   let cost = used * YOCTO_PER_TOKEN
