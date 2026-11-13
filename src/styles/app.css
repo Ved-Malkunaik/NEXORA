@@ -531,3 +531,22 @@
   color: var(--err);
   font-weight: 700;
 }
+
+.toggle-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  margin: 12px 0;
+  border: 1px solid var(--ink);
+  cursor: pointer;
+}
+.toggle-row input {
+  margin-top: 3px;
+  accent-color: var(--ink);
+}
+.toggle-row > span {
+  display: grid;
+  gap: 4px;
+}

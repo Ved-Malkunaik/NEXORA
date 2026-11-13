@@ -47,9 +47,18 @@ export const TTL_OPTIONS = [
   { label: '24 hours', s: 86_400 },
 ]
 
+/** How a session is paid. Every chat runs in a TEE either way. */
 export const MODE_INFO: Record<PrivacyMode, { short: string; title: string; body: string }> = {
-  A: { short: 'Mode A', title: 'Hide who pays', body: 'Pay with a prepaid note and a zero-knowledge proof: the gateway sees a valid payment, not your account. You can also send NEAR by asking.' },
-  B: { short: 'Mode B', title: 'Hide what you ask', body: 'Runs in a TEE on NEAR AI Cloud. Each answer comes with an attestation.' },
+  A: {
+    short: 'Private',
+    title: 'Paid privately with a note',
+    body: 'A prepaid note and a zero-knowledge proof pay for the session, so the gateway cannot tell which account is asking. Fixed price, no refund.',
+  },
+  B: {
+    short: 'Credits',
+    title: 'Paid from your credits',
+    body: 'Locks a cap from your credits and refunds what you do not use. The session is linked to your account on-chain.',
+  },
 }
 
 // ---------- deposit ----------
@@ -208,7 +217,7 @@ export function OpenSessionModal({
   const [busy, setBusy] = useState(false)
   const available = balance ? BigInt(balance.available) : 0n
   const full = (balance?.open_sessions.length ?? 0) >= MAX_OPEN
-  /** Live Mode A is paid with fixed-price notes; null on the demo account, where Mode A is simulated. */
+  /** Private sessions are paid with fixed-price notes; null on the demo account, where this is simulated. */
   const noteQuery = useClientQuery<NoteInfo | null>((c) => (open ? c.getNoteInfo() : Promise.resolve(null)), [open])
   const note = mode === 'A' ? (noteQuery.data ?? null) : null
   const mustBuy = !!note && note.unspent === 0
@@ -257,7 +266,7 @@ export function OpenSessionModal({
       onClose={onClose}
       busy={busy}
       label="Session"
-      title="Open a chat session"
+      title={mode === 'A' ? 'Open a private session' : 'Open a chat session'}
       footer={
         <>
           <span className="muted small">
@@ -269,18 +278,14 @@ export function OpenSessionModal({
         </>
       }
     >
-      <div className="field">
-        <span className="label">Privacy mode</span>
-        <div className="mode-pick">
-          {(['B', 'A'] as PrivacyMode[]).map((m) => (
-            <button key={m} type="button" className={`mode-opt ${mode === m ? 'on' : ''}`} onClick={() => setMode(m)} aria-pressed={mode === m}>
-              <span className="label">{MODE_INFO[m].short}</span>
-              <strong>{MODE_INFO[m].title}</strong>
-              <span className="small muted">{MODE_INFO[m].body}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <p className="small muted">Every prompt runs in a TEE on NEAR AI Cloud and every answer comes with its attestation. You can also send NEAR from any session by asking.</p>
+      <label className="toggle-row">
+        <input type="checkbox" checked={mode === 'A'} onChange={(e) => setMode(e.target.checked ? 'A' : 'B')} />
+        <span>
+          <strong>Pay privately with a note</strong>
+          <span className="small muted">{MODE_INFO.A.body}{mode === 'B' ? ' Off: the session is paid from your credits and linked to your account on-chain.' : ''}</span>
+        </span>
+      </label>
       {note && (
         <div className="field">
           <span className="label">Note</span>
@@ -356,13 +361,17 @@ export function SessionCard({ s, compact = false }: { s: SessionInfo; compact?: 
   const [busy, setBusy] = useState<'end' | 'reclaim' | null>(null)
   const phase = sessionPhase(s, now)
   const used = ratio(s.metered, s.cap)
+  /** Paid with a note: nothing on-chain to settle or reclaim, and no refund. */
+  const priv = s.mode === 'A'
+  const name = priv ? `Private session ${s.session_id}` : `Session #${s.session_id}`
 
   async function end() {
     if (!accountId) return
     setBusy('end')
     try {
       const r = await client.closeSession(accountId, s.session_id)
-      toast.ok(`Session #${s.session_id} settled`, `Spent ${formatNear(r.spent)} NEAR, ${formatNear(r.refunded)} NEAR back to your credits.`)
+      if (priv && r.refunded === '0') toast.ok(`${name} ended`, 'The rest of the note is not refunded.')
+      else toast.ok(`${name} settled`, `Spent ${formatNear(r.spent)} NEAR, ${formatNear(r.refunded)} NEAR back to your credits.`)
     } catch (e) {
       toast.error('Could not end session', e instanceof Error ? e.message : String(e))
     } finally {
@@ -375,7 +384,8 @@ export function SessionCard({ s, compact = false }: { s: SessionInfo; compact?: 
     setBusy('reclaim')
     try {
       const r = await client.reclaimSession(accountId, s.session_id)
-      toast.ok(`Session #${s.session_id} reclaimed`, `${formatNear(r.refunded)} NEAR back to your credits.`)
+      if (priv && r.refunded === '0') toast.ok(`${name} removed`, 'It had expired. Notes are not refunded.')
+      else toast.ok(`${name} reclaimed`, `${formatNear(r.refunded)} NEAR back to your credits.`)
     } catch (e) {
       toast.error('Could not reclaim', e instanceof Error ? e.message : String(e))
     } finally {
@@ -386,15 +396,17 @@ export function SessionCard({ s, compact = false }: { s: SessionInfo; compact?: 
   const status =
     phase === 'active'
       ? { cls: 'badge-ok', text: `${formatDuration(nsToMs(s.expires_at) - now)} left` }
-      : phase === 'expired'
-        ? { cls: 'badge-warn', text: `Expired · settle within ${formatDuration(nsToMs(s.settle_deadline) - now)}` }
-        : { cls: 'badge-err', text: 'Unsettled · reclaim available' }
+      : priv
+        ? { cls: 'badge-dim', text: 'Expired' }
+        : phase === 'expired'
+          ? { cls: 'badge-warn', text: `Expired · settle within ${formatDuration(nsToMs(s.settle_deadline) - now)}` }
+          : { cls: 'badge-err', text: 'Unsettled · reclaim available' }
 
   return (
     <article className={`session-card ${compact ? 'compact' : ''}`}>
       <div className="card-head">
         <span className="label">
-          Session #{s.session_id} · {MODE_INFO[s.mode].short}
+          {name} · {MODE_INFO[s.mode].short}
         </span>
         <span className={`badge ${status.cls}`}>{status.text}</span>
       </div>
@@ -411,7 +423,11 @@ export function SessionCard({ s, compact = false }: { s: SessionInfo; compact?: 
             Chat
           </Link>
         )}
-        {phase !== 'reclaimable' ? (
+        {priv ? (
+          <button className="btn btn-sm-inline" onClick={phase === 'reclaimable' ? reclaim : end} disabled={busy !== null}>
+            {busy ? 'Ending…' : phase === 'active' ? 'End session' : 'Remove'}
+          </button>
+        ) : phase !== 'reclaimable' ? (
           <button className="btn btn-sm-inline" onClick={end} disabled={busy !== null}>
             {busy === 'end' ? 'Settling…' : 'End & settle'}
           </button>

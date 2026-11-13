@@ -1,4 +1,4 @@
-// Mode A in the browser: make a note, and later prove in zero knowledge that you hold a paid one.
+// Private payment in the browser: make a note, and later prove in zero knowledge that you hold a paid one.
 // Mirrors gateway/src/notes.js. The proof library (Semaphore v4, Groth16) is loaded on demand because
 // it is large, and it downloads its circuit files the first time a proof is made.
 import { sha256 } from '@noble/hashes/sha256'

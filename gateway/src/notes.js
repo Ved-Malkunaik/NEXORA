@@ -1,4 +1,4 @@
-// Mode A: pay for requests without the gateway learning which account paid.
+// Private payment: pay for requests without the gateway learning which account paid.
 //
 // The idea is the one behind zkAPI (prepay, then prove in zero knowledge that a request is backed by
 // a paid note), built on NEAR with Semaphore v4 proofs (Groth16).

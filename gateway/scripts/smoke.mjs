@@ -5,7 +5,7 @@
 //
 // Needs near-cli-rs with <owner>'s key in the system keychain (it signs open_session). Opens a
 // 0.005 NEAR session with a fresh chat key, then checks: unsigned and forged requests are rejected,
-// a signed Mode B chat streams and returns an attestation, a replayed request is rejected, and the
+// a signed chat streams and returns an attestation, a replayed request is rejected, and the
 // session settles on-chain with a receipt.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -57,7 +57,7 @@ function openSession(args) {
   return { sessionId: out.match(/^"(\d+)"\s*$/m)?.[1], tx: out.match(/Transaction ID: ([1-9A-HJ-NP-Za-km-z]{43,44})/)?.[1] }
 }
 
-console.log(`Mode B: opening a session on ${contractId} as ${owner}…`)
+console.log(`Credits-paid chat: opening a session on ${contractId} as ${owner}…`)
 const { sessionId, tx } = openSession({ cap: '5000000000000000000000', ttl_seconds: '600', client_key: `ed25519:${pub}` })
 check('open_session returned an id and tx', !!sessionId && !!tx, `session ${sessionId}, tx ${tx}`)
 if (!sessionId || !tx) process.exit(1)
@@ -130,8 +130,8 @@ if (ab.sessionId) {
   check('gateway settled the abandoned session with its metered cost', receipt?.outcome === 'Settled' && BigInt(receipt.spent) > 0n, receipt ? `spent ${receipt.spent} yocto` : 'no receipt')
 }
 
-// ---------- Mode A: buy a note in public, spend it with a zero-knowledge proof ----------
-console.log('\nMode A: buying a note…')
+// ---------- notes: buy a note in public, spend it with a zero-knowledge proof ----------
+console.log('\nPrivate payment: buying a note…')
 const pool = await (await fetch(`${GW}/v1/notes`)).json()
 const identity = new Identity()
 const buy = openSession({ cap: pool.price, ttl_seconds: '300', note_commitment: identity.commitment.toString() })
@@ -171,8 +171,10 @@ if (anon.session_id) {
   r = await post('/v1/chat', aBody, asign('/v1/chat', aBody))
   const aEvents = (await r.text()).trim().split('\n').map((l) => JSON.parse(l))
   const aText = aEvents.filter((e) => e.type === 'token').map((e) => e.text).join('')
-  const aProof = aEvents.find((e) => e.type === 'proof')?.proof
+  const aProof = aEvents.find((e) => e.type === 'proof' && e.proof.kind === 'zk')?.proof
+  const aTee = aEvents.find((e) => e.type === 'proof' && e.proof.kind === 'tee')?.proof
   check('anonymous chat streams a reply', r.status === 200 && aText.length > 0, `${aText.slice(0, 70)}…`)
+  check('private chat also gets a verified TEE attestation', aTee?.verified === true || (!live && aTee?.checks?.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok)), aTee ? `${aTee.checks.filter((c) => c.ok).length}/${aTee.checks.length} checks` : 'none')
   check('payment proof verified', aProof?.kind === 'zk' && aProof.verified === true, aProof?.checks?.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
   const meter = await (await fetch(`${GW}/v1/metering?ids=${anon.session_id}`)).json()
   check('usage metered against the note', BigInt(meter[anon.session_id] ?? '0') > 0n, `${meter[anon.session_id]} yocto of ${anon.cap}`)

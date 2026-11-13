@@ -95,16 +95,13 @@ function PrivacyDefaults() {
     <section className="card">
       <span className="label">Privacy defaults</span>
       <h3 style={{ marginTop: 6 }}>For new sessions</h3>
-      <div className="field">
-        <span className="label">Default mode</span>
-        <div className="segmented" role="radiogroup">
-          {(['A', 'B'] as PrivacyMode[]).map((m) => (
-            <button key={m} role="radio" aria-checked={mode === m} onClick={() => setMode(m)}>
-              {MODE_INFO[m].short} · {MODE_INFO[m].title}
-            </button>
-          ))}
-        </div>
-      </div>
+      <label className="toggle-row">
+        <input type="checkbox" checked={mode === 'A'} onChange={(e) => setMode(e.target.checked ? 'A' : 'B')} />
+        <span>
+          <strong>Pay privately with a note by default</strong>
+          <span className="small muted">{MODE_INFO.A.body}{mode === 'B' ? ' Off: the session is paid from your credits and linked to your account on-chain.' : ''}</span>
+        </span>
+      </label>
       <AmountField label="Default cap" value={cap} onChange={setCap} presets={['0.01', '0.05', '0.1']} error={capErr} />
       <div className="field">
         <span className="label">Default duration</span>

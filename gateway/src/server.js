@@ -4,10 +4,10 @@
 //   POST /v1/chat                      stream a reply (NDJSON), metered against the on-chain cap
 //   GET  /v1/metering?ids=1,2          metered spend per open session
 //   POST /v1/sessions/:id/settle       settle_session on-chain with the gateway's own metered total
-//   GET  /v1/notes                     Mode A: public list of paid note commitments, price, scope
-//   POST /v1/notes                     Mode A: buy a note (public; settles the purchase session)
-//   POST /v1/anon/sessions             Mode A: spend a note with a zero-knowledge proof (anonymous)
-//   POST /v1/anon/sessions/:id/close   Mode A: drop an anonymous session
+//   GET  /v1/notes                     notes: public list of paid note commitments, price, scope
+//   POST /v1/notes                     notes: buy a note (public; settles the purchase session)
+//   POST /v1/anon/sessions             notes: spend a note with a zero-knowledge proof (anonymous)
+//   POST /v1/anon/sessions/:id/close   notes: drop an anonymous session
 //   GET  /v1/attestation               fresh, verified NEAR AI Cloud TEE attestation (see nearai.js)
 //   GET  /v1/health                    config + whether a signing key is loaded
 //
@@ -71,7 +71,7 @@ const cfg = readConfig()
 const gw = createGateway(cfg)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** Mode A notes: one fixed price so every note looks the same. Default 0.02 NEAR = 1000 tokens. */
+/** Private-payment notes: one fixed price so every note looks the same. Default 0.02 NEAR = 1000 tokens. */
 const NOTE_PRICE = process.env.NOTE_PRICE_YOCTO || '20000000000000000000000'
 const notes = createNotes({
   file: join(here, '..', '.data', 'notes.json'),
@@ -196,7 +196,7 @@ async function chatLocked(req, res, origin) {
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(res, 400, { error: 'Prompt must be 1–8000 characters' }, origin)
   let s
   let m
-  /** Set for a Mode A request paid with a note: no account is involved. */
+  /** Set for a request paid with a note: no account is involved. */
   let anon = null
   if (anon_session !== undefined) {
     try {
@@ -216,7 +216,7 @@ async function chatLocked(req, res, origin) {
   }
   if (nowNs() > BigInt(s.expires_at)) return send(res, 409, { code: 'SESSION_EXPIRED', error: 'This session has expired. End it to settle, or open a new one.' }, origin)
 
-  // An on-chain session is always Mode B. Mode A exists only as a note-backed anonymous session.
+  // An on-chain session is internally mode 'B'; a note-paid session is the anonymous path above.
   m ??= metering[session_id] ??= { metered: '0', tokens: 0, mode: 'B', requests: 0 }
   if (!anon) m.mode = 'B'
   const cap = BigInt(s.cap)
@@ -315,8 +315,9 @@ async function chatLocked(req, res, origin) {
   }
   emit({ type: 'usage', tokens: Number(cost / YOCTO_PER_TOKEN), cost: cost.toString(), metered: m.metered })
 
+  // Every chat gets the TEE evidence; a note-paid chat also gets its payment proof.
   if (anon) emit({ type: 'proof', proof: notes.proofFor(anon, attestation?.verified ?? null) })
-  else if (attestation) emit({ type: 'proof', proof: await responseProof(attestation, end) })
+  if (attestation) emit({ type: 'proof', proof: await responseProof(attestation, end) })
   emit({ type: 'done' })
   res.end()
 }

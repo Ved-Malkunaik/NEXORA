@@ -15,13 +15,14 @@ export const HERO = {
   kicker: 'Meet your',
   line1: 'Private',
   line2: 'Assistant',
-  sub: 'Choose what stays private: who pays, what you ask, or both.',
+  sub: 'What you ask stays in a TEE. Who pays can stay private too.',
 }
 
 export const PRODUCT_TABS = [
   'Private AI chat',
-  'TEE inference (Mode B)',
-  'Anonymous payments (Mode A)',
+  'TEE inference on every chat',
+  'Anonymous note payments',
+  'Send NEAR by asking',
   'Attestation viewer',
   'Capped chat sessions',
   'Prepaid NEAR credits',
@@ -42,12 +43,12 @@ export interface PrivacyPromise {
 /** Section 3: how each privacy promise works (not testimonials). */
 export const PROMISES: PrivacyPromise[] = [
   {
-    name: 'Mode B · Hide what you ask',
+    name: 'Every chat · Hide what you ask',
     role: 'NEAR AI Cloud · TEE',
     quote: '“Your prompt runs inside a secure enclave, and every answer comes with an attestation you can check.',
   },
   {
-    name: 'Mode A · Hide who pays',
+    name: 'Private payment · Hide who pays',
     role: 'Notes · Zero-knowledge proofs',
     quote: '“Buy a note, then prove in zero knowledge that you hold a paid one. The gateway can verify the payment without learning whose it is.',
   },

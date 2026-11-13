@@ -212,7 +212,7 @@ function IntentsForm({ accountId, live }: { accountId: string; live: boolean }) 
             Send <strong>{quote.amount_in} {asset.symbol}</strong> on {asset.chain} and receive <strong><Near yocto={quote.amount_out} /></strong> as Nexora credits.
           </p>
         )}
-        <p className="callout small">The deposit is public on-chain. Mode A and Mode B protect your chats, not this funding transaction.</p>
+        <p className="callout small">The deposit is public on-chain. The TEE and private note payments protect your chats, not this funding transaction.</p>
       </Modal>
     </div>
   )

@@ -1,6 +1,5 @@
-// Fallback replies for when NEARAI_API_KEY is not set, and the Mode A payment-proof placeholder.
-// Everything here is labelled so it is never mistaken for a real model answer or a real proof.
-import { createHash } from 'node:crypto'
+// Fallback replies for when NEARAI_API_KEY is not set, labelled so they are never mistaken for a
+// real model answer.
 
 const ANSWERS = [
   [/medical|report|health|diagnos/i, 'Here is a plain-language summary. The report lists three findings: blood counts within normal range, slightly raised LDL cholesterol, and vitamin D below the reference level. None of these is urgent. Common next steps are a repeat lipid panel in three months and asking your doctor whether a vitamin D supplement makes sense. Bring the original report to that appointment, since only your doctor can interpret it against your history.'],
@@ -17,26 +16,4 @@ export function answerFor(prompt) {
     ? hit[1]
     : 'Your request reached the Nexora gateway and was metered against your on-chain session cap.'
   return `[Simulated reply: the gateway has no NEAR AI Cloud API key, so no model ran.] ${body}`
-}
-
-const hex = (s, bytes = 32) => createHash('sha256').update(s).digest('hex').slice(0, bytes * 2)
-
-/**
- * Mode A placeholder. zkAPI is not integrated in this build: the request is paid from an on-chain
- * session that names your account, so the payer is NOT hidden. The proof says so.
- */
-export function paymentPlaceholder(sessionId, n) {
-  return {
-    kind: 'zk',
-    scheme: 'zkAPI (not integrated: preview only)',
-    nullifier: hex(`nullifier:${sessionId}:${n}`),
-    proof_bytes: 0,
-    key_reuse_window_s: 0,
-    verified: false,
-    issued_at: Date.now(),
-    raw: {
-      mock: true,
-      note: 'No zero-knowledge proof was produced. This request was paid from on-chain session ' + sessionId + ', which is linked to your account. Mode A does not hide the payer yet.',
-    },
-  }
 }

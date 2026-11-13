@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useClient, useClientQuery, useNow } from '../client/context'
 import { GATEWAY_URL, fetchGatewayHealth, type GatewayHealth } from '../client/live'
-import type { ChatMessage, PrivacyMode, Proof, RecipientStatus, SessionInfo } from '../client/types'
+import type { ChatMessage, PaymentProof, ProofCheck, RecipientStatus, SessionInfo, TeeAttestation } from '../client/types'
 import { MODE_INFO, OpenSessionModal, SessionCard, prefs, sessionPhase } from '../components/actions'
 import { PageHeader, RequireWallet } from '../components/Layouts'
 import { useToast } from '../components/toast'
@@ -12,37 +12,24 @@ import { useNear } from '../wallet/context'
 
 export function Chat() {
   const { accountId } = useNear()
-  const [mode, setMode] = useState<PrivacyMode>(prefs.mode)
   return (
     <>
-      <PageHeader label="02 · Chat" title="Private chat" subtitle={MODE_INFO[mode].body}>
+      <PageHeader
+        label="02 · Chat"
+        title="Private chat"
+        subtitle="Every prompt runs in a TEE on NEAR AI Cloud. Pay from your credits or privately with a note, and send NEAR just by asking."
+      >
         <div className="row">
           <MockBadge />
-          <div className="segmented" role="radiogroup" aria-label="Privacy mode for new sessions">
-            {(['A', 'B'] as PrivacyMode[]).map((m) => (
-              <button
-                key={m}
-                role="radio"
-                aria-checked={mode === m}
-                onClick={() => {
-                  setMode(m)
-                  prefs.setMode(m)
-                }}
-                title={MODE_INFO[m].title}
-              >
-                {MODE_INFO[m].short} · {MODE_INFO[m].title}
-              </button>
-            ))}
-          </div>
         </div>
       </PageHeader>
       <LiveNotice />
-      <RequireWallet what="start a private chat">{accountId && <ChatBody accountId={accountId} mode={mode} />}</RequireWallet>
+      <RequireWallet what="start a private chat">{accountId && <ChatBody accountId={accountId} />}</RequireWallet>
     </>
   )
 }
 
-function ChatBody({ accountId, mode }: { accountId: string; mode: PrivacyMode }) {
+function ChatBody({ accountId }: { accountId: string }) {
   const [params, setParams] = useSearchParams()
   const balance = useClientQuery((c) => c.getBalance(accountId), [accountId])
   const sessions = useClientQuery((c) => c.getSessions(accountId), [accountId])
@@ -83,7 +70,7 @@ function ChatBody({ accountId, mode }: { accountId: string; mode: PrivacyMode })
     <>
       <div className="chat-layout">
         {selected ? (
-          <ChatPanel key={selected.session_id} accountId={accountId} session={selected} viewMode={mode} onNewSession={() => setOpenModal(true)} />
+          <ChatPanel key={selected.session_id} accountId={accountId} session={selected} onNewSession={() => setOpenModal(true)} />
         ) : (
           <div className="card chat chat-empty">
             <EmptyState label="No session" title={balance.data ? 'Open a session to start chatting' : 'Deposit credits, then open a session'}>
@@ -92,7 +79,7 @@ function ChatBody({ accountId, mode }: { accountId: string; mode: PrivacyMode })
               </p>
               {balance.data ? (
                 <button className="btn btn-primary" onClick={() => setOpenModal(true)}>
-                  Open a {MODE_INFO[mode].short} session
+                  Open a session
                 </button>
               ) : (
                 <Link className="btn btn-primary" to="/app">
@@ -115,7 +102,7 @@ function ChatBody({ accountId, mode }: { accountId: string; mode: PrivacyMode })
               <select className="select" value={selected?.session_id} onChange={(e) => select(e.target.value)} aria-label="Choose session">
                 {sessions.data.map((s) => (
                   <option key={s.session_id} value={s.session_id}>
-                    #{s.session_id} · {MODE_INFO[s.mode].short} · {sessionPhase(s, now)}
+                    {s.mode === 'A' ? `Private ${s.session_id}` : `#${s.session_id}`} · {MODE_INFO[s.mode].short} · {sessionPhase(s, now)}
                   </option>
                 ))}
               </select>
@@ -129,7 +116,7 @@ function ChatBody({ accountId, mode }: { accountId: string; mode: PrivacyMode })
         open={openModal}
         onClose={() => setOpenModal(false)}
         balance={balance.data}
-        defaultMode={mode}
+        defaultMode={prefs.mode()}
         onOpened={(s) => select(s.session_id)}
       />
     </>
@@ -139,12 +126,10 @@ function ChatBody({ accountId, mode }: { accountId: string; mode: PrivacyMode })
 function ChatPanel({
   accountId,
   session,
-  viewMode,
   onNewSession,
 }: {
   accountId: string
   session: SessionInfo
-  viewMode: PrivacyMode
   onNewSession: () => void
 }) {
   const client = useClient()
@@ -158,13 +143,12 @@ function ChatPanel({
   const logRef = useRef<HTMLDivElement>(null)
   const phase = sessionPhase(session, now)
   const { config } = useNear()
-  /** A transfer request waiting for the user's confirmation (Mode A). */
+  /** A transfer request waiting for the user's confirmation. */
   const [pending, setPending] = useState<{ intent: TransferIntent; prompt: string; recipient: RecipientStatus | 'checking' } | null>(null)
   const [sending, setSending] = useState(false)
 
-  /** Mode A: a clear "send X NEAR to Y" is handled here in the browser, never sent to the gateway. */
+  /** A clear "send X NEAR to Y" is handled here in the browser, never sent to the gateway. */
   function interceptTransfer(prompt: string): boolean {
-    if (session.mode !== 'A') return false
     const parsed = parseTransfer(prompt)
     if (parsed.kind === 'none') return false
     if (parsed.kind === 'invalid' || parsed.intent.to === accountId) {
@@ -249,17 +233,14 @@ function ChatPanel({
       ? 'This session has expired. End it to settle, or open a new one.'
       : notice?.code === 'CAP_REACHED'
         ? 'Spending cap reached. Open a new session to continue.'
-        : session.mode === 'A'
-          ? `Message Nexora, or try "send 0.001 NEAR to alice.${config.networkId === 'mainnet' ? 'near' : 'testnet'}"`
-          : `Message Nexora (${MODE_INFO[session.mode].short} · ${MODE_INFO[session.mode].title.toLowerCase()})`
+        : `Message Nexora, or try "send 0.001 NEAR to alice.${config.networkId === 'mainnet' ? 'near' : 'testnet'}"`
 
   return (
     <section className="card chat">
       <div className="chat-top">
         <span className="label">
-          Session #{session.session_id} · {MODE_INFO[session.mode].short} · {MODE_INFO[session.mode].title}
+          {session.mode === 'A' ? `Private session ${session.session_id}` : `Session #${session.session_id}`} · {MODE_INFO[session.mode].title}
         </span>
-        {viewMode !== session.mode && <span className="small muted">Mode is fixed per session. Open a new one to use {MODE_INFO[viewMode].short}.</span>}
       </div>
 
       <div className="chat-log" ref={logRef} aria-live="polite">
@@ -434,28 +415,62 @@ function ChatPanel({
   )
 }
 
-function ProofPanel({ accountId, session }: { accountId: string; session: SessionInfo | undefined }) {
-  const proof = useClientQuery<Proof | null>((c) => (session ? c.getProof(accountId, session.session_id) : Promise.resolve(null)), [accountId, session?.session_id])
-  const mode = session?.mode ?? 'B'
-  const p = proof.data
+function Checks({ checks }: { checks?: ProofCheck[] }) {
+  if (!checks?.length) return null
+  return (
+    <ul className="checks small">
+      {checks.map((c) => (
+        <li key={c.name} title={c.detail}>
+          <span className={c.ok ? 'check-ok' : 'check-fail'} aria-label={c.ok ? 'passed' : 'failed'}>
+            {c.ok ? '✓' : '✕'}
+          </span>
+          <span>
+            {c.name}
+            <span className="muted"> · {c.detail}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
 
+function Badge({ p }: { p: { verified: boolean; raw?: Record<string, unknown> } | null | undefined }) {
+  return p ? (
+    <span className={`badge ${p.verified ? 'badge-ok' : 'badge-warn'}`}>
+      {p.verified ? 'Verified' : 'Not verified'}
+      {p.raw?.mock ? ' · mock' : ''}
+    </span>
+  ) : (
+    <span className="badge badge-dim">Waiting</span>
+  )
+}
+
+/** Right-hand evidence: the TEE attestation for every session, plus the payment proof for private ones. */
+function ProofPanel({ accountId, session }: { accountId: string; session: SessionInfo | undefined }) {
+  return (
+    <>
+      <TeeCard accountId={accountId} session={session} />
+      {session?.mode === 'A' && <PaymentCard accountId={accountId} session={session} />}
+    </>
+  )
+}
+
+function TeeCard({ accountId, session }: { accountId: string; session: SessionInfo | undefined }) {
+  const q = useClientQuery<TeeAttestation | null>((c) => (session ? c.getProof(accountId, session.session_id) : Promise.resolve(null)), [accountId, session?.session_id])
+  const p = q.data
   return (
     <section className="card proof">
       <div className="card-head">
-        <span className="label">{mode === 'B' ? 'TEE attestation' : 'Payment proof'}</span>
-        {p ? <span className={`badge ${p.verified ? 'badge-ok' : 'badge-warn'}`}>{p.verified ? 'Verified' : 'Not verified'}{p.raw?.mock ? ' · mock' : ''}</span> : <span className="badge badge-dim">Waiting</span>}
+        <span className="label">TEE attestation</span>
+        <Badge p={p} />
       </div>
       {!session ? (
         <p className="muted small">Open a session to see where your prompt runs and how it was paid for.</p>
-      ) : proof.loading ? (
+      ) : q.loading ? (
         <Skeleton h={120} />
       ) : !p ? (
-        <p className="muted small">
-          {mode === 'B'
-            ? 'After the first answer, this shows the attestation proving the model ran inside a TEE on NEAR AI Cloud.'
-            : 'After the first answer, this shows the zero-knowledge proof that paid for it without revealing your account.'}
-        </p>
-      ) : p.kind === 'tee' ? (
+        <p className="muted small">After the first answer, this shows the attestation proving the model ran inside a TEE on NEAR AI Cloud.</p>
+      ) : (
         <>
           <ul className="kv small">
             <li>
@@ -485,21 +500,7 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
               </span>
             </li>
           </ul>
-          {p.checks && p.checks.length > 0 && (
-            <ul className="checks small">
-              {p.checks.map((c) => (
-                <li key={c.name} title={c.detail}>
-                  <span className={c.ok ? 'check-ok' : 'check-fail'} aria-label={c.ok ? 'passed' : 'failed'}>
-                    {c.ok ? '✓' : '✕'}
-                  </span>
-                  <span>
-                    {c.name}
-                    <span className="muted"> · {c.detail}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <Checks checks={p.checks} />
           <details className="raw">
             <summary className="small">Raw attestation</summary>
             <pre>{JSON.stringify(p, null, 2)}</pre>
@@ -508,6 +509,29 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
             How to verify independently ↗
           </a>
         </>
+      )}
+      {session && (
+        <p className="small muted" style={{ marginTop: 10 }}>
+          Spent so far: <Near yocto={session.metered} decimals={5} />
+        </p>
+      )}
+    </section>
+  )
+}
+
+function PaymentCard({ accountId, session }: { accountId: string; session: SessionInfo }) {
+  const q = useClientQuery<PaymentProof | null>((c) => c.getPaymentProof(accountId, session.session_id), [accountId, session.session_id])
+  const p = q.data
+  return (
+    <section className="card proof">
+      <div className="card-head">
+        <span className="label">Private payment</span>
+        <Badge p={p} />
+      </div>
+      {q.loading ? (
+        <Skeleton h={100} />
+      ) : !p ? (
+        <p className="muted small">After the first answer, this shows the zero-knowledge proof that paid for this session without revealing your account.</p>
       ) : (
         <>
           <ul className="kv small">
@@ -521,10 +545,6 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
                 <span className="mono">{shortHash(p.nullifier, 10)}</span> <CopyButton text={p.nullifier} />
               </span>
             </li>
-            <li>
-              <span className="muted">Proof size</span>
-              <span>{p.proof_bytes} bytes</span>
-            </li>
             {p.anonymity_set !== undefined && (
               <li>
                 <span className="muted">Hidden among</span>
@@ -534,25 +554,11 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
               </li>
             )}
           </ul>
-          {p.checks && p.checks.length > 0 && (
-            <ul className="checks small">
-              {p.checks.map((c) => (
-                <li key={c.name} title={c.detail}>
-                  <span className={c.ok ? 'check-ok' : 'check-fail'} aria-label={c.ok ? 'passed' : 'failed'}>
-                    {c.ok ? '✓' : '✕'}
-                  </span>
-                  <span>
-                    {c.name}
-                    <span className="muted"> · {c.detail}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <Checks checks={p.checks} />
           {p.verified ? (
             <>
               <p className="small muted">
-                The gateway checked that a paid note backs this session without learning which one, so it cannot tell which account paid. Requests inside this session can be linked to each other. Your IP address and your prompt are not hidden in this mode.
+                The gateway checked that a paid note backs this session without learning which one, so it cannot tell which account paid. Requests inside this session can be linked to each other. Your IP address and your prompt are not hidden by this.
               </p>
               {p.anonymity_set !== undefined && p.anonymity_set < 10 && (
                 <p className="callout small">
@@ -562,7 +568,7 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
             </>
           ) : (
             <p className="callout small">
-              <strong>Payer not hidden yet.</strong> {typeof p.raw?.note === 'string' ? p.raw.note : 'No zero-knowledge proof was produced for this request.'}
+              <strong>Payer not hidden.</strong> {typeof p.raw?.note === 'string' ? p.raw.note : 'No zero-knowledge proof was produced for this request.'}
             </p>
           )}
           <details className="raw">
@@ -570,11 +576,6 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
             <pre>{JSON.stringify(p, null, 2)}</pre>
           </details>
         </>
-      )}
-      {session && (
-        <p className="small muted" style={{ marginTop: 10 }}>
-          Spent so far: <Near yocto={session.metered} decimals={5} />
-        </p>
       )}
     </section>
   )
@@ -598,7 +599,7 @@ function LiveNotice() {
           : h.model_live
             ? `Replies come from ${h.model} inside a TEE on NEAR AI Cloud; the gateway verifies the attestation before sending your prompt.`
             : `The attestation of ${h.attested_model ?? 'the model'} is real, but replies are simulated: the gateway has no NEAR AI Cloud API key.`}{' '}
-      Mode A pays with a note and a zero-knowledge proof, so the gateway cannot tell which account is asking; it still sees your IP address and your prompt.
+      A private session pays with a note and a zero-knowledge proof, so the gateway cannot tell which account is asking; it still sees your IP address and your prompt.
     </p>
   )
 }

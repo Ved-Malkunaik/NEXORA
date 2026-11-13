@@ -49,9 +49,9 @@ available ──withdraw──► user account
 A session ends exactly one way: it is either settled or reclaimed, never both. A closed
 session is deleted from state, so it cannot be settled or reclaimed again.
 
-## Mode A: pay with a note
+## Paying privately with a note
 
-Mode A swaps steps 3 to 5 for two steps that are deliberately separate.
+Turning on "Pay privately with a note" swaps steps 3 to 5 for two steps that are deliberately separate.
 
 1. **Buy a note (public).** The browser creates a secret and calls
    `open_session(cap = note price, ttl, note_commitment)` with the session key. The gateway
@@ -63,7 +63,7 @@ Mode A swaps steps 3 to 5 for two steps that are deliberately separate.
    note cannot be spent again, and opens a 24-hour session with the note's token budget.
    Chat requests are signed with that key and carry no account id.
 
-Nothing about a Mode A session goes on-chain. There is no refund of unused tokens and no
+Nothing about a private session goes on-chain. It still runs every prompt through the same verified TEE. There is no refund of unused tokens and no
 reclaim: the note was paid in full when it was bought.
 
 ## Timing
@@ -90,7 +90,7 @@ though the model runs in a TEE.
 - On-chain session history ties an account to its usage volume (cap, spent, timing).
   We store only a receipt hash, never prompt or answer content.
 - Deposits and withdrawals are public on-chain.
-- Mode B hides the prompt from the model provider but not from the gateway, under option (a).
-- Mode A hides which account pays for a session, among the accounts that bought notes. It
+- The TEE hides the prompt from the model provider but not from the gateway, under option (a). This applies to every chat.
+- Paying with a note hides which account pays for a session, among the accounts that bought notes. It
   does not hide the user's IP address or the prompt contents, and requests inside one
-  session are linkable to each other. See "Mode A" below.
+  session are linkable to each other. See "Paying privately with a note" below.

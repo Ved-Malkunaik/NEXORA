@@ -21,11 +21,13 @@ import type {
   CreditBalance,
   NexoraClient,
   NoteInfo,
+  PaymentProof,
   PrivacyMode,
   Proof,
   Receipt,
   RecipientStatus,
   SessionInfo,
+  TeeAttestation,
   Yocto,
 } from './types'
 
@@ -50,7 +52,7 @@ interface GatewayNotes {
   commitments: string[]
 }
 
-/** A Mode A session paid with a note. Lives on the gateway and in this browser, not on-chain. */
+/** A private session paid with a note. Lives on the gateway and in this browser, not on-chain. */
 interface AnonSession {
   /** Id shown in the app ("a-1a2b3c4d"). */
   ui_id: string
@@ -280,7 +282,7 @@ export class LiveClient implements NexoraClient {
     await this.call('unregister', {}, 1n, 60n)
   }
 
-  // ---------- Mode A: notes and anonymous sessions ----------
+  // ---------- private payment: notes and anonymous sessions ----------
 
   private notes() {
     return this.local<Note[]>(`notes:${this.me()}`, [])
@@ -443,8 +445,13 @@ export class LiveClient implements NexoraClient {
     return this.local<ChatMessage[]>(`chat:${sessionId}`, [])
   }
 
-  async getProof(_accountId: string, sessionId: string): Promise<Proof | null> {
-    return this.local<Proof | null>(`proof:${sessionId}`, null)
+  async getProof(_accountId: string, sessionId: string): Promise<TeeAttestation | null> {
+    const p = this.local<Proof | null>(`proof:${sessionId}`, null)
+    return p?.kind === 'tee' ? p : null
+  }
+
+  async getPaymentProof(_accountId: string, sessionId: string): Promise<PaymentProof | null> {
+    return this.local<PaymentProof | null>(`payproof:${sessionId}`, null)
   }
 
   async *chat(accountId: string, sessionId: string, prompt: string, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
@@ -509,7 +516,7 @@ export class LiveClient implements NexoraClient {
             reply.cost = ev.cost
             reply.tokens = ev.tokens
           } else if (ev.type === 'error') reply.error = ev.message
-          else if (ev.type === 'proof') this.setLocal(`proof:${sessionId}`, ev.proof)
+          else if (ev.type === 'proof') this.setLocal(ev.proof.kind === 'tee' ? `proof:${sessionId}` : `payproof:${sessionId}`, ev.proof)
           yield ev
         }
       }
@@ -525,7 +532,7 @@ export class LiveClient implements NexoraClient {
     }
   }
 
-  // ---------- wallet actions (Mode A) ----------
+  // ---------- wallet actions (any session) ----------
 
   async checkRecipient(to: string): Promise<RecipientStatus> {
     if (/^[0-9a-f]{64}$/.test(to)) return 'implicit'

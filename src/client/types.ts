@@ -7,7 +7,11 @@ export type Yocto = string
 /** Nanosecond timestamp, as the contract's JSON returns it (U64 string). */
 export type Nanos = string
 
-/** A: hide who pays (zkAPI). B: hide what you ask (NEAR AI Cloud TEE). */
+/**
+ * How a session is paid. Every chat runs in a TEE either way.
+ * B: from your credits, an on-chain session linked to your account.
+ * A: privately, with a prepaid note and a zero-knowledge proof (no account sent to the gateway).
+ */
 export type PrivacyMode = 'A' | 'B'
 
 export interface ContractConfig {
@@ -74,7 +78,7 @@ export interface ChatMessage {
 /** Does the recipient of a transfer exist on this network? 'unknown' when the RPC could not say. */
 export type RecipientStatus = 'exists' | 'missing' | 'implicit' | 'unknown'
 
-/** Mode B: proof that the model ran in a TEE. */
+/** Proof that the model ran in a TEE (every session). */
 export interface TeeAttestation {
   kind: 'tee'
   provider: string
@@ -99,7 +103,7 @@ export interface ProofCheck {
   detail: string
 }
 
-/** Mode A: proof that the request was paid for without revealing the payer. */
+/** Proof that a private session was paid for without revealing the payer. */
 export interface PaymentProof {
   kind: 'zk'
   scheme: string
@@ -115,7 +119,7 @@ export interface PaymentProof {
   raw: Record<string, unknown>
 }
 
-/** Mode A notes on the live gateway: fixed price, and what this browser holds. */
+/** Private-payment notes on the live gateway: fixed price, and what this browser holds. */
 export interface NoteInfo {
   price: Yocto
   tokens: number
@@ -182,9 +186,12 @@ export interface NexoraClient {
 
   getMessages(accountId: string, sessionId: string): Promise<ChatMessage[]>
   chat(accountId: string, sessionId: string, prompt: string, signal?: AbortSignal): AsyncIterable<ChatEvent>
-  getProof(accountId: string, sessionId: string): Promise<Proof | null>
+  /** Latest TEE attestation for a session (every session). */
+  getProof(accountId: string, sessionId: string): Promise<TeeAttestation | null>
+  /** Latest payment proof for a privately paid session. */
+  getPaymentProof(accountId: string, sessionId: string): Promise<PaymentProof | null>
 
-  /** Mode A note details, or null where notes are not available (the demo account). */
+  /** Private-payment note details, or null where notes are not available (the demo account). */
   getNoteInfo(): Promise<NoteInfo | null>
   /** Check a transfer recipient before the wallet opens. */
   checkRecipient(accountId: string): Promise<RecipientStatus>

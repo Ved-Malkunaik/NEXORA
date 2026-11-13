@@ -44,6 +44,8 @@ interface State {
   sessions: Record<string, SessionInfo>
   messages: Record<string, ChatMessage[]>
   proofs: Record<string, Proof>
+  /** Payment proofs of privately paid sessions (absent in data saved by older builds). */
+  payProofs?: Record<string, PaymentProof>
   nextId: number
   fees: string
   timeOffsetMs: number
@@ -283,9 +285,15 @@ export class MockClient implements NexoraClient {
     return [...(this.state.messages[sessionId] ?? [])]
   }
 
-  async getProof(_accountId: string, sessionId: string) {
+  async getProof(_accountId: string, sessionId: string): Promise<TeeAttestation | null> {
     await sleep(120)
-    return this.state.proofs[sessionId] ?? null
+    const p = this.state.proofs[sessionId]
+    return p?.kind === 'tee' ? p : null
+  }
+
+  async getPaymentProof(_accountId: string, sessionId: string): Promise<PaymentProof | null> {
+    await sleep(120)
+    return this.state.payProofs?.[sessionId] ?? null
   }
 
   getAssets() {
@@ -432,17 +440,20 @@ export class MockClient implements NexoraClient {
     s.metered = (startMetered + cost).toString()
     reply.cost = cost.toString()
     reply.tokens = Number(promptTokens + tokens)
-    const proof = this.makeProof(s)
-    this.state.proofs[sessionId] = proof
+    const tee = this.makeAttestation(s)
+    this.state.proofs[sessionId] = tee
+    const pay = s.mode === 'A' ? this.makePaymentProof(s) : null
+    if (pay) (this.state.payProofs ??= {})[sessionId] = pay
     this.commit()
     yield { type: 'usage', tokens: reply.tokens, cost: reply.cost, metered: s.metered }
-    yield { type: 'proof', proof }
+    if (pay) yield { type: 'proof', proof: pay }
+    yield { type: 'proof', proof: tee }
     yield { type: 'done' }
   }
 
-  private makeProof(s: SessionInfo): Proof {
+  private makeAttestation(s: SessionInfo): TeeAttestation {
     const n = (this.state.messages[s.session_id]?.length ?? 0).toString()
-    if (s.mode === 'B') {
+    {
       const p: TeeAttestation = {
         kind: 'tee',
         provider: 'NEAR AI Cloud',
@@ -458,6 +469,10 @@ export class MockClient implements NexoraClient {
       }
       return p
     }
+  }
+
+  private makePaymentProof(s: SessionInfo): PaymentProof {
+    const n = (this.state.messages[s.session_id]?.length ?? 0).toString()
     const p: PaymentProof = {
       kind: 'zk',
       scheme: 'Simulated (demo account)',
@@ -471,12 +486,12 @@ export class MockClient implements NexoraClient {
     return p
   }
 
-  /** The demo account has no real notes: Mode A stays a labelled preview here. */
+  /** The demo account has no real notes: private payment is simulated here. */
   async getNoteInfo() {
     return null
   }
 
-  // ---------- wallet actions (Mode A), simulated ----------
+  // ---------- wallet actions, simulated ----------
 
   async checkRecipient(to: string): Promise<RecipientStatus> {
     await this.latency(200, 400)
