@@ -9,9 +9,10 @@ the real cost, and the user can always reclaim unspent credits.
 | Actor | What it is | Key it uses |
 |---|---|---|
 | User | A NEAR account holder, using the web app | Wallet (full access) for deposits and withdrawals. A function-call **session key** for `open_session` and `reclaim_session` |
-| Gateway | Our Node service that proxies chat to NEAR AI Cloud and settles cost | A function-call key limited to `settle_session` on the contract |
+| Gateway | Our Node service that proxies chat to the model (OpenRouter, or NEAR AI Cloud in TEE mode) and settles cost | A function-call key limited to `settle_session` on the contract |
 | Owner | The deployer / operator | Full-access key. Only used for `set_gateway`, `set_paused`, `withdraw_fees`, `set_owner` |
-| NEAR AI Cloud | TEE-hosted model provider | API key held by the gateway |
+| OpenRouter | Free open models (not in a TEE) | API key held by the gateway |
+| NEAR AI Cloud | TEE-hosted models, optional (`MODEL_PROVIDER=nearai`) | API key held by the gateway |
 
 ## Happy path
 
@@ -26,10 +27,10 @@ the real cost, and the user can always reclaim unspent credits.
    chat key that stays in the browser.
 4. **Chat.** The browser signs each request with the chat key and sends it to the gateway.
    The gateway checks the session on-chain (`get_session`), checks the signature against the
-   `client_key` in the session's `open_session` transaction, verifies NEAR AI Cloud's TEE
-   attestation (Intel TDX quote + NVIDIA GPU evidence, fresh nonce), and only then forwards
-   the prompt. After the reply it checks the enclave's signature over the exact request and
-   response. The UI lists every check. The gateway meters cost and stops at the cap.
+   `client_key` in the session's `open_session` transaction, and forwards the prompt to a free
+   OpenRouter model. Each answer says which model ran it and that it was not in a TEE. (In TEE
+   mode the gateway instead verifies NEAR AI Cloud's attestation first and checks the reply's
+   signature, and the UI lists every check.) The gateway meters cost and stops at the cap.
 5. **Settle.** When the chat ends, the gateway calls
    `settle_session(id, spent, receipt_hash)` with `spent <= cap`. `spent` goes to the
    operator's fee pool, the rest is refunded to `available`, and a receipt (hash only,

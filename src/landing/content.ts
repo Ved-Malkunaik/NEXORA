@@ -3,27 +3,27 @@
 export const TOP_BAR = { strong: 'New:', text: 'Nexora is live on NEAR testnet - Private AI chat you control' }
 
 export const PROMPTS = [
-  'Summarize my medical report without anyone reading it.',
-  'Draft a confidential term sheet for our seed round.',
+  'Summarize this article in five bullet points.',
+  'Draft a seed term sheet for our round.',
   'Review this contract clause for hidden liabilities.',
   'Explain my tax options for staking rewards on NEAR.',
 ]
 
-export const FEATURES = ['Private inference', 'TEE attestation', 'Anonymous credits']
+export const FEATURES = ['Anonymous payments', 'Zero-knowledge proofs', 'Pay by prompt']
 
 export const HERO = {
   kicker: 'Meet your',
   line1: 'Private',
   line2: 'Assistant',
-  sub: 'What you ask stays in a TEE. Who pays can stay private too.',
+  sub: 'Chat with open AI models and pay without revealing who you are.',
 }
 
 export const PRODUCT_TABS = [
   'Private AI chat',
-  'TEE inference on every chat',
+  'Free open models via OpenRouter',
   'Anonymous note payments',
   'Pay by prompt (private sessions)',
-  'Attestation viewer',
+  'Proof viewer',
   'Capped chat sessions',
   'Prepaid NEAR credits',
   'NEAR Intents funding',
@@ -43,9 +43,9 @@ export interface PrivacyPromise {
 /** Section 3: how each privacy promise works (not testimonials). */
 export const PROMISES: PrivacyPromise[] = [
   {
-    name: 'Every chat · Hide what you ask',
-    role: 'NEAR AI Cloud · TEE',
-    quote: '“Your prompt runs inside a secure enclave, and every answer comes with an attestation you can check.',
+    name: 'Every chat · Open models',
+    role: 'OpenRouter · Free models',
+    quote: '“Chat with free open models. Your transcript stays in your browser, but the model host can read what you send, so keep secrets out of it.',
   },
   {
     name: 'Private payment · Hide who pays',

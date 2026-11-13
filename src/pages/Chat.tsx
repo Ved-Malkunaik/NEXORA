@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useClient, useClientQuery, useNow } from '../client/context'
+import { useInference } from '../client/inference'
 import { GATEWAY_URL, fetchGatewayHealth, type GatewayHealth } from '../client/live'
-import type { ChatMessage, PaymentProof, ProofCheck, RecipientStatus, SessionInfo, TeeAttestation } from '../client/types'
+import type { ChatMessage, PaymentProof, ProofCheck, RecipientStatus, RouteInfo, SessionInfo, TeeAttestation } from '../client/types'
 import { MODE_INFO, OpenSessionModal, SessionCard, prefs, sessionPhase } from '../components/actions'
 import { PageHeader, RequireWallet } from '../components/Layouts'
 import { useToast } from '../components/toast'
@@ -12,12 +13,13 @@ import { useNear } from '../wallet/context'
 
 export function Chat() {
   const { accountId } = useNear()
+  const inference = useInference()
   return (
     <>
       <PageHeader
         label="02 · Chat"
         title="Private chat"
-        subtitle="Every prompt runs in a TEE on NEAR AI Cloud. Pay from your credits, or privately with a note, which also lets you send NEAR just by asking."
+        subtitle={`${inference?.tee ? 'Every prompt runs in a TEE on NEAR AI Cloud.' : inference ? `Chat with free open models via ${inference.provider}.` : ''} Pay from your credits, or privately with a note, which also lets you send NEAR just by asking.`.trim()}
       >
         <div className="row">
           <MockBadge />
@@ -143,6 +145,7 @@ function ChatPanel({
   const logRef = useRef<HTMLDivElement>(null)
   const phase = sessionPhase(session, now)
   const { config } = useNear()
+  const inference = useInference()
   /** A transfer request waiting for the user's confirmation. */
   const [pending, setPending] = useState<{ intent: TransferIntent; prompt: string; recipient: RecipientStatus | 'checking' } | null>(null)
   const [sending, setSending] = useState(false)
@@ -241,7 +244,7 @@ function ChatPanel({
         ? 'Spending cap reached. Open a new session to continue.'
         : session.mode === 'A'
           ? `Ask Nexora anything, or pay by prompt: "send 0.001 NEAR to alice.${config.networkId === 'mainnet' ? 'near' : 'testnet'}"`
-          : 'Ask Nexora anything. Your prompt runs in a TEE.'
+          : inference?.tee ? 'Ask Nexora anything. Your prompt runs in a TEE.' : 'Ask Nexora anything.'
 
   return (
     <section className="card chat">
@@ -453,7 +456,7 @@ function Badge({ p }: { p: { verified: boolean; raw?: Record<string, unknown> } 
   )
 }
 
-/** Right-hand evidence: the TEE attestation for every session, plus the payment proof for private ones. */
+/** Right-hand evidence: where the model ran (TEE attestation, or the plain route) plus the payment proof for private sessions. */
 function ProofPanel({ accountId, session }: { accountId: string; session: SessionInfo | undefined }) {
   return (
     <>
@@ -464,20 +467,27 @@ function ProofPanel({ accountId, session }: { accountId: string; session: Sessio
 }
 
 function TeeCard({ accountId, session }: { accountId: string; session: SessionInfo | undefined }) {
-  const q = useClientQuery<TeeAttestation | null>((c) => (session ? c.getProof(accountId, session.session_id) : Promise.resolve(null)), [accountId, session?.session_id])
+  const q = useClientQuery<TeeAttestation | RouteInfo | null>((c) => (session ? c.getProof(accountId, session.session_id) : Promise.resolve(null)), [accountId, session?.session_id])
+  const inference = useInference()
   const p = q.data
+  if (p?.kind === 'route') return <RouteCard p={p} session={session} />
+  const tee = inference?.tee ?? false
   return (
     <section className="card proof">
       <div className="card-head">
-        <span className="label">TEE attestation</span>
-        <Badge p={p} />
+        <span className="label">{tee ? 'TEE attestation' : 'Model'}</span>
+        {tee ? <Badge p={p} /> : <span className="badge badge-dim">{inference?.provider ?? 'Waiting'}</span>}
       </div>
       {!session ? (
         <p className="muted small">Open a session to see where your prompt runs and how it was paid for.</p>
       ) : q.loading ? (
         <Skeleton h={120} />
       ) : !p ? (
-        <p className="muted small">After the first answer, this shows the attestation proving the model ran inside a TEE on NEAR AI Cloud.</p>
+        <p className="muted small">
+          {tee
+            ? 'After the first answer, this shows the attestation proving the model ran inside a TEE on NEAR AI Cloud.'
+            : 'After the first answer, this shows which model answered and who could read the prompt.'}
+        </p>
       ) : (
         <>
           <ul className="kv small">
@@ -518,6 +528,46 @@ function TeeCard({ accountId, session }: { accountId: string; session: SessionIn
           </a>
         </>
       )}
+      {session && (
+        <p className="small muted" style={{ marginTop: 10 }}>
+          Spent so far: <Near yocto={session.metered} decimals={5} />
+        </p>
+      )}
+    </section>
+  )
+}
+
+/** A reply that did not run in a TEE: say where it went and what that means, with nothing to "verify". */
+function RouteCard({ p, session }: { p: RouteInfo; session: SessionInfo | undefined }) {
+  return (
+    <section className="card proof">
+      <div className="card-head">
+        <span className="label">Model</span>
+        <span className="badge badge-warn">Not in a TEE{p.raw?.mock ? ' · mock' : ''}</span>
+      </div>
+      <ul className="kv small">
+        <li>
+          <span className="muted">Provider</span>
+          <span>{p.provider}</span>
+        </li>
+        <li>
+          <span className="muted">Model</span>
+          <span className="mono" style={{ overflowWrap: 'anywhere' }}>
+            {p.model}
+          </span>
+        </li>
+        {p.host && (
+          <li>
+            <span className="muted">Run by</span>
+            <span>{p.host}</span>
+          </li>
+        )}
+        <li>
+          <span className="muted">Answered</span>
+          <span>{formatTime(p.issued_at)}</span>
+        </li>
+      </ul>
+      <p className="callout small">{p.note}</p>
       {session && (
         <p className="small muted" style={{ marginTop: 10 }}>
           Spent so far: <Near yocto={session.metered} decimals={5} />
@@ -604,10 +654,12 @@ function LiveNotice() {
         ? 'The gateway is not reachable right now.'
         : !h
           ? ''
-          : h.model_live
-            ? `Replies come from ${h.model} inside a TEE on NEAR AI Cloud; the gateway verifies the attestation before sending your prompt.`
-            : `The attestation of ${h.attested_model ?? 'the model'} is real, but replies are simulated: the gateway has no NEAR AI Cloud API key.`}{' '}
-      A private session pays with a note and a zero-knowledge proof, so the gateway cannot tell which account is asking; it still sees your IP address and your prompt.
+          : !h.model_live
+            ? 'Replies are simulated: the gateway has no model API key.'
+            : h.tee
+              ? `Replies come from ${h.model} inside a TEE on NEAR AI Cloud; the gateway verifies the attestation before sending your prompt.`
+              : `Replies come from free open models via OpenRouter (${(h.models ?? [h.model]).join(', ')}). This is not private inference: OpenRouter and the model's host can read your prompts.`}{' '}
+      A private session pays with a note and a zero-knowledge proof, so neither the gateway nor the model provider learns which account is asking. Both still see the prompt, and the gateway sees your IP address.
     </p>
   )
 }

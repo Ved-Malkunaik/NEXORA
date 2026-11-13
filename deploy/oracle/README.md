@@ -59,7 +59,8 @@ open, right-click the key → Properties → Security, and leave only your own u
 
 **Before copying**, edit `gateway/.env` on your PC:
 
-- Put in a **new NEAR AI Cloud API key** (rotate the old one at <https://cloud.near.ai>).
+- Put in your **OpenRouter API key**: `OPENROUTER_API_KEY=sk-or-...`. If the file still has a `NEARAI_API_KEY`
+  line, delete it, and revoke that key at <https://cloud.near.ai> since it was exposed earlier.
 - Add `ALLOWED_ORIGINS=` followed by your Vercel address once you know it (step 7), for example
   `ALLOWED_ORIGINS=https://nexora.vercel.app`: exactly as the browser shows it, with `https://` and no
   trailing slash. Several addresses are comma-separated.
@@ -95,7 +96,7 @@ From your PC or any browser:
 https://<ip-with-dashes>.sslip.io/v1/health
 ```
 
-It should show `"ok":true`, `"can_settle":true` and `"model_live":true`.
+It should show `"ok":true`, `"can_settle":true`, `"model_live":true` and `"provider":"openrouter"`.
 
 **Stop the gateway on your PC now.** Two gateways with different copies of the notes and metering
 would disagree.
@@ -136,8 +137,9 @@ Updates never touch `.env` or `.data`.
 
 ## Before judging
 
-- **Cap your NEAR AI Cloud spending.** Judges pay with free testnet NEAR, but every reply costs you real
-  money at NEAR AI Cloud. Set a limit on that account.
+- **Free-model limits are shared by every judge:** 20 requests a minute and 1000 a day (the daily figure
+  needs 10 credits bought on OpenRouter; otherwise it is 50). When a limit is reached the app says
+  "busy, try again in a minute" and charges nothing. Settings → Gateway shows today's count.
 - **Tell judges what they need:** a NEAR testnet wallet (MyNearWallet, Meteor, HERE or Intear) with
   testnet NEAR from a faucet, then deposit about 0.1 NEAR on the Dashboard. The first deposit keeps
   0.05 NEAR as a storage reserve, and a private session's note costs 0.02 NEAR. Without a wallet they can still use **Explore with a demo account**,

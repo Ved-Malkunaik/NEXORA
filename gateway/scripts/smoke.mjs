@@ -90,8 +90,11 @@ const proof = events.find((e) => e.type === 'proof')?.proof
 check('signed chat streams a reply', r.status === 200 && text.length > 0, `${text.slice(0, 70)}…`)
 check('usage metered', !!usage && BigInt(usage.cost) > 0n, usage && `${usage.tokens} tokens`)
 // Without NEARAI_API_KEY the reply is simulated, so the one reply-signature check is expected to fail.
-const live = (await (await fetch(`${GW}/v1/health`)).json()).model_live
-check(live ? 'TEE attestation + reply signature verified' : 'TEE attestation checks pass (reply simulated)', !!proof && (live ? proof.verified === true : proof.checks.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok)), proof?.checks.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
+const health = await (await fetch(`${GW}/v1/health`)).json()
+const live = health.model_live
+const tee = health.tee ?? health.provider === 'nearai'
+if (tee) check(live ? 'TEE attestation + reply signature verified' : 'TEE attestation checks pass (reply simulated)', !!proof && (live ? proof.verified === true : proof.checks.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok)), proof?.checks?.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
+else check('reply says where it ran (no TEE claimed)', proof?.kind === 'route' && proof.tee === false && !!proof.model, proof && `${proof.provider} · ${proof.model}${proof.host ? ` · run by ${proof.host}` : ''}`)
 
 r = await post('/v1/chat', chatBody, good)
 check('replayed request rejected', r.status === 401, String(r.status))
@@ -174,7 +177,9 @@ if (anon.session_id) {
   const aProof = aEvents.find((e) => e.type === 'proof' && e.proof.kind === 'zk')?.proof
   const aTee = aEvents.find((e) => e.type === 'proof' && e.proof.kind === 'tee')?.proof
   check('anonymous chat streams a reply', r.status === 200 && aText.length > 0, `${aText.slice(0, 70)}…`)
-  check('private chat also gets a verified TEE attestation', aTee?.verified === true || (!live && aTee?.checks?.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok)), aTee ? `${aTee.checks.filter((c) => c.ok).length}/${aTee.checks.length} checks` : 'none')
+  const aRoute = aEvents.find((e) => e.type === 'proof' && e.proof.kind === 'route')?.proof
+  if (tee) check('private chat also gets a verified TEE attestation', aTee?.verified === true || (!live && aTee?.checks?.filter((c) => c.name !== 'Reply signed by this model').every((c) => c.ok)), aTee ? `${aTee.checks.filter((c) => c.ok).length}/${aTee.checks.length} checks` : 'none')
+  else check('private chat says where it ran', aRoute?.tee === false && !!aRoute.model, aRoute?.model)
   check('payment proof verified', aProof?.kind === 'zk' && aProof.verified === true, aProof?.checks?.map((c) => `${c.ok ? '✓' : '✕'} ${c.name}`).join(', '))
   const meter = await (await fetch(`${GW}/v1/metering?ids=${anon.session_id}`)).json()
   check('usage metered against the note', BigInt(meter[anon.session_id] ?? '0') > 0n, `${meter[anon.session_id]} yocto of ${anon.cap}`)

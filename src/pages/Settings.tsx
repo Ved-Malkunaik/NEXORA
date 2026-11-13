@@ -284,6 +284,23 @@ function GatewayCard() {
             <span className="muted">Model</span>
             <span>{h.model}</span>
           </li>
+          {h.provider && (
+            <li>
+              <span className="muted">Runs on</span>
+              <span>
+                {h.provider === 'openrouter' ? 'OpenRouter (not in a TEE)' : h.provider === 'nearai' ? 'NEAR AI Cloud (TEE)' : 'Simulated'}
+                {h.models && h.models.length > 1 ? ` · fallbacks: ${h.models.slice(1).join(', ')}` : ''}
+              </span>
+            </li>
+          )}
+          {h.limits && (
+            <li>
+              <span className="muted">Free-tier use</span>
+              <span>
+                {h.limits.today} of {h.limits.per_day} requests today · {h.limits.last_minute}/{h.limits.per_minute} this minute
+              </span>
+            </li>
+          )}
           {h.attested_model && (
             <li>
               <span className="muted">TEE attestation</span>
@@ -295,7 +312,7 @@ function GatewayCard() {
           )}
         </ul>
       )}
-      {h && h.model_live === false && <p className="small muted">Replies are simulated: set NEARAI_API_KEY in gateway/.env for real NEAR AI Cloud answers.</p>}
+      {h && h.model_live === false && <p className="small muted">Replies are simulated: set OPENROUTER_API_KEY in gateway/.env for real answers.</p>}
       {h && !h.can_settle && <p className="small error">Add GATEWAY_ACCOUNT_ID and GATEWAY_PRIVATE_KEY to gateway/.env and restart it.</p>}
       <button className="btn btn-sm" onClick={() => setTick((t) => t + 1)}>
         Check again

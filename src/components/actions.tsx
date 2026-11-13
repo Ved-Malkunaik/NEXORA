@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useClient, useClientQuery, useNow } from '../client/context'
+import { useInference } from '../client/inference'
 import type { CreditBalance, NoteInfo, PrivacyMode, SessionInfo } from '../client/types'
 import { formatNear, parseNear, ratio, tryParseNear } from '../lib/near-amount'
 import { useNear } from '../wallet/context'
@@ -47,7 +48,7 @@ export const TTL_OPTIONS = [
   { label: '24 hours', s: 86_400 },
 ]
 
-/** How a session is paid. Every chat runs in a TEE either way. */
+/** How a session is paid. The model is the same either way. */
 export const MODE_INFO: Record<PrivacyMode, { short: string; title: string; body: string }> = {
   A: {
     short: 'Private',
@@ -218,6 +219,7 @@ export function OpenSessionModal({
   const available = balance ? BigInt(balance.available) : 0n
   const full = (balance?.open_sessions.length ?? 0) >= MAX_OPEN
   /** Private sessions are paid with fixed-price notes; null on the demo account, where this is simulated. */
+  const inference = useInference()
   const noteQuery = useClientQuery<NoteInfo | null>((c) => (open ? c.getNoteInfo() : Promise.resolve(null)), [open])
   const note = mode === 'A' ? (noteQuery.data ?? null) : null
   const mustBuy = !!note && note.unspent === 0
@@ -278,7 +280,11 @@ export function OpenSessionModal({
         </>
       }
     >
-      <p className="small muted">Every prompt runs in a TEE on NEAR AI Cloud and every answer comes with its attestation.</p>
+      <p className="small muted">
+        {inference?.tee
+          ? 'Every prompt runs in a TEE on NEAR AI Cloud and every answer comes with its attestation.'
+          : `Replies come from free open models via ${inference?.provider ?? 'OpenRouter'}. They are not private: the model's host can read your prompts.`}
+      </p>
       <label className="toggle-row">
         <input type="checkbox" checked={mode === 'A'} onChange={(e) => setMode(e.target.checked ? 'A' : 'B')} />
         <span>

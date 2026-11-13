@@ -13,7 +13,10 @@
 //
 // The browser never tells the gateway how much to charge: cost is metered here, per token.
 // Prompts and replies are not stored; only per-session token counts and cost (.data/metering.json).
-// With NEARAI_API_KEY set, prompts go to NEAR AI Cloud only after its TEE attestation verifies.
+// Model provider (MODEL_PROVIDER, or picked from whichever key is set):
+//   openrouter  free open models via OpenRouter. NOT private: OpenRouter and the model host see prompts.
+//   nearai      NEAR AI Cloud in a TEE; prompts are sent only after its attestation verifies.
+//   simulated   no key: canned replies, labelled as such.
 //
 // Callers are authenticated per session: each chat/settle request is signed by the session's chat key,
 // whose public key the owner registered on-chain in open_session (auth.js).
@@ -26,10 +29,21 @@ import { createGateway, readConfig, receiptHash } from './settlement.js'
 import { MOCK_MODEL_ID, answerFor } from './model.js'
 import { NEARAI_MODEL, attest, fetchSignature, streamChat, verifySignature } from './nearai.js'
 import { createNotes } from './notes.js'
+import { UpstreamError, createLimiter, openRouterModels, streamOpenRouter } from './openrouter.js'
 
 const NEARAI_API_KEY = process.env.NEARAI_API_KEY || ''
-const LIVE_MODEL = !!NEARAI_API_KEY
-const MODEL_ID = LIVE_MODEL ? NEARAI_MODEL : MOCK_MODEL_ID
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
+const PROVIDER = (process.env.MODEL_PROVIDER || (OPENROUTER_API_KEY ? 'openrouter' : NEARAI_API_KEY ? 'nearai' : 'simulated')).toLowerCase()
+if (!['openrouter', 'nearai', 'simulated'].includes(PROVIDER)) throw new Error(`MODEL_PROVIDER must be openrouter, nearai or simulated (got ${PROVIDER})`)
+/** Real replies from a real model. */
+const LIVE_MODEL = PROVIDER === 'openrouter' ? !!OPENROUTER_API_KEY : PROVIDER === 'nearai' ? !!NEARAI_API_KEY : false
+/** Prompts run in an attested TEE. Only NEAR AI Cloud provides that. */
+const TEE = PROVIDER === 'nearai'
+const OR_MODELS = openRouterModels()
+const MODEL_ID = !LIVE_MODEL ? MOCK_MODEL_ID : PROVIDER === 'openrouter' ? OR_MODELS[0] : NEARAI_MODEL
+const OR_DATA_COLLECTION = process.env.OPENROUTER_DATA_COLLECTION === 'deny' ? 'deny' : 'allow'
+/** Account-wide free-tier limits, kept a little under OpenRouter's own so users see a clear message. */
+const limiter = createLimiter({ perMinute: Number(process.env.OPENROUTER_RPM || 18), perDay: Number(process.env.OPENROUTER_RPD || 1000) })
 
 /** Same price as the UI shows: 0.00002 NEAR per token. */
 export const YOCTO_PER_TOKEN = 20_000_000_000_000_000_000n
@@ -229,6 +243,11 @@ async function chatLocked(req, res, origin) {
   const room = (cap - start) / YOCTO_PER_TOKEN - promptTokens
   if (room <= 0n) return send(res, 409, { code: 'CAP_REACHED', error: 'This session reached its spending cap. End it and open a new one to continue.' }, origin)
 
+  if (PROVIDER === 'openrouter' && LIVE_MODEL) {
+    const busy = limiter.take()
+    if (busy) return send(res, 429, { code: 'GATEWAY_DOWN', error: busy }, origin)
+  }
+
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', ...cors(origin) })
   const emit = (ev) => res.write(`${JSON.stringify(ev)}\n`)
   const upstream = new AbortController()
@@ -240,9 +259,9 @@ async function chatLocked(req, res, origin) {
     }
   })
 
-  // Verify the enclave BEFORE the prompt leaves the gateway, in both modes.
+  // NEAR AI Cloud: verify the enclave BEFORE the prompt leaves the gateway, however the session is paid.
   let attestation = null
-  {
+  if (TEE) {
     try {
       attestation = await currentAttestation()
     } catch (e) {
@@ -263,7 +282,11 @@ async function chatLocked(req, res, origin) {
   try {
     if (LIVE_MODEL) {
       const maxTokens = Number(room < 1024n ? room : 1024n)
-      for await (const ev of streamChat({ apiKey: NEARAI_API_KEY, messages, maxTokens, signal: upstream.signal })) {
+      const stream =
+        PROVIDER === 'openrouter'
+          ? streamOpenRouter({ apiKey: OPENROUTER_API_KEY, models: OR_MODELS, messages, maxTokens, signal: upstream.signal, siteUrl: ORIGINS[0], dataCollection: OR_DATA_COLLECTION })
+          : streamChat({ apiKey: NEARAI_API_KEY, messages, maxTokens, signal: upstream.signal })
+      for await (const ev of stream) {
         if (ev.type === 'end') {
           end = ev
           break
@@ -308,7 +331,8 @@ async function chatLocked(req, res, origin) {
   if (closed) return res.end()
   if (failed) {
     console.warn(`chat #${session_id} failed: ${failed.message}`)
-    emit({ type: 'error', code: 'GATEWAY_DOWN', message: `The model provider failed (${failed.message}). ${cost > 0n ? 'You were charged only for what was delivered.' : 'Nothing was charged.'}` })
+    const why = failed instanceof UpstreamError ? failed.message : `The model provider failed (${failed.message}).`
+    emit({ type: 'error', code: 'GATEWAY_DOWN', message: `${why} ${cost > 0n ? 'You were charged only for what was delivered.' : 'Nothing was charged.'}` })
     return res.end()
   }
   if (capHit) {
@@ -320,8 +344,26 @@ async function chatLocked(req, res, origin) {
   // Every chat gets the TEE evidence; a note-paid chat also gets its payment proof.
   if (anon) emit({ type: 'proof', proof: notes.proofFor(anon, attestation?.verified ?? null) })
   if (attestation) emit({ type: 'proof', proof: await responseProof(attestation, end) })
+  else if (!TEE) emit({ type: 'proof', proof: routeInfo(end) })
   emit({ type: 'done' })
   res.end()
+}
+
+/** Where a reply came from when there is no TEE: stated plainly, nothing to verify. */
+function routeInfo(end) {
+  const live = LIVE_MODEL && PROVIDER === 'openrouter'
+  return {
+    kind: 'route',
+    provider: live ? 'OpenRouter' : 'Simulated',
+    model: end?.model ?? MODEL_ID,
+    host: end?.provider ?? null,
+    tee: false,
+    issued_at: Date.now(),
+    note: live
+      ? 'Not private inference: OpenRouter and the company running this model can read the prompt, and free models may log it or train on it. No account name was sent with it.'
+      : 'No model ran: the gateway has no model API key, so this reply was simulated.',
+    raw: { request_id: end?.id ?? null, data_collection: live ? OR_DATA_COLLECTION : null },
+  }
 }
 
 /** The attestation plus, for a real reply, the provider's signature over this exact request and response. */
@@ -464,7 +506,7 @@ const server = createServer(async (req, res) => {
       return res.end()
     }
     if (req.method === 'GET' && url.pathname === '/v1/health')
-      return send(res, 200, { ok: true, contract: cfg.contractId, gateway: cfg.gatewayId ?? null, can_settle: !!(cfg.gatewayId && cfg.privateKey), model: MODEL_ID, model_live: LIVE_MODEL, attested_model: NEARAI_MODEL, attestation_verified: attestCache ? attestCache.value.verified : null }, origin)
+      return send(res, 200, { ok: true, contract: cfg.contractId, gateway: cfg.gatewayId ?? null, can_settle: !!(cfg.gatewayId && cfg.privateKey), model: MODEL_ID, model_live: LIVE_MODEL, provider: PROVIDER, tee: TEE, ...(PROVIDER === 'openrouter' ? { models: OR_MODELS, limits: limiter.stats() } : {}), ...(TEE ? { attested_model: NEARAI_MODEL, attestation_verified: attestCache ? attestCache.value.verified : null } : {}) }, origin)
     if (req.method === 'GET' && url.pathname === '/v1/metering') {
       const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean)
       return send(res, 200, Object.fromEntries(ids.map((id) => [id, metering[id]?.metered ?? notes.metered(id) ?? '0'])), origin)
@@ -502,5 +544,6 @@ server.listen(PORT, BIND, () => {
   console.log(`Nexora gateway on http://${BIND === '0.0.0.0' ? 'localhost' : BIND}:${PORT}`)
   console.log(`  contract ${cfg.contractId} via ${cfg.rpcUrl}`)
   console.log(`  settles as ${cfg.gatewayId ?? '(no GATEWAY_ACCOUNT_ID)'}${cfg.privateKey ? '' : '  (no GATEWAY_PRIVATE_KEY: chat works, settling will fail)'}`)
-  console.log(`  model ${MODEL_ID}${LIVE_MODEL ? '' : `  (set NEARAI_API_KEY for real replies; attestation of ${NEARAI_MODEL} is still real)`}`)
+  console.log(`  provider ${PROVIDER}${TEE ? ' (TEE, attested)' : ' (no TEE)'}: ${PROVIDER === 'openrouter' && LIVE_MODEL ? OR_MODELS.join(', ') : MODEL_ID}`)
+  if (!LIVE_MODEL) console.log('  no model API key: replies are simulated. Set OPENROUTER_API_KEY (or NEARAI_API_KEY) in .env')
 })

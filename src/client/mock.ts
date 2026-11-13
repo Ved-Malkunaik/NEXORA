@@ -15,6 +15,7 @@ import type {
   Proof,
   Receipt,
   RecipientStatus,
+  RouteInfo,
   SessionInfo,
   TeeAttestation,
   Yocto,
@@ -104,8 +105,8 @@ function answerFor(prompt: string, mode: PrivacyMode): string {
   const hit = ANSWERS.find(([re]) => re.test(prompt))
   if (hit) return hit[1]
   return mode === 'B'
-    ? 'Your prompt was processed inside a trusted execution environment. The model host cannot read it, and the attestation panel shows the proof for this answer. Ask me anything: drafting, summarising, reviewing code or documents.'
-    : 'This request was paid with an anonymous credit, so the provider can check the payment is valid without learning which account sent it. Ask me anything: drafting, summarising, reviewing code or documents.'
+    ? 'This is a simulated reply on the demo account. Connected to a wallet, your prompt goes to a free open model through OpenRouter. Ask me anything: drafting, summarising, reviewing code or documents.'
+    : 'This is a simulated reply on the demo account. A private session is paid with a note and a zero-knowledge proof, so the gateway cannot tell which account sent it. Ask me anything: drafting, summarising, reviewing code or documents.'
 }
 
 export class MockClient implements NexoraClient {
@@ -285,10 +286,10 @@ export class MockClient implements NexoraClient {
     return [...(this.state.messages[sessionId] ?? [])]
   }
 
-  async getProof(_accountId: string, sessionId: string): Promise<TeeAttestation | null> {
+  async getProof(_accountId: string, sessionId: string): Promise<TeeAttestation | RouteInfo | null> {
     await sleep(120)
     const p = this.state.proofs[sessionId]
-    return p?.kind === 'tee' ? p : null
+    return p && p.kind !== 'zk' ? p : null
   }
 
   async getPaymentProof(_accountId: string, sessionId: string): Promise<PaymentProof | null> {
@@ -440,7 +441,7 @@ export class MockClient implements NexoraClient {
     s.metered = (startMetered + cost).toString()
     reply.cost = cost.toString()
     reply.tokens = Number(promptTokens + tokens)
-    const tee = this.makeAttestation(s)
+    const tee = this.makeRoute()
     this.state.proofs[sessionId] = tee
     const pay = s.mode === 'A' ? this.makePaymentProof(s) : null
     if (pay) (this.state.payProofs ??= {})[sessionId] = pay
@@ -451,23 +452,17 @@ export class MockClient implements NexoraClient {
     yield { type: 'done' }
   }
 
-  private makeAttestation(s: SessionInfo): TeeAttestation {
-    const n = (this.state.messages[s.session_id]?.length ?? 0).toString()
-    {
-      const p: TeeAttestation = {
-        kind: 'tee',
-        provider: 'NEAR AI Cloud',
-        model: 'deepseek-ai/DeepSeek-V3.1',
-        hardware: 'Intel TDX + NVIDIA H100 (confidential computing)',
-        measurement: mockHex(`mrtd:${s.session_id}`, 48),
-        signing_key: `0x${mockHex(`signer:${s.session_id}`, 20)}`,
-        nonce: mockHex(`nonce:${s.session_id}:${n}`, 16),
-        issued_at: this.now(),
-        verified: true,
-        verify_url: 'https://docs.near.ai/cloud/verification',
-        raw: { mock: true, report: 'TDX quote + NVIDIA GPU evidence would appear here in Level 3' },
-      }
-      return p
+  /** The demo mirrors the hosted gateway: free models via OpenRouter, no TEE. */
+  private makeRoute(): RouteInfo {
+    return {
+      kind: 'route',
+      provider: 'OpenRouter (simulated)',
+      model: 'google/gemma-4-31b-it:free',
+      host: null,
+      tee: false,
+      issued_at: this.now(),
+      note: 'Demo account: no model ran. With a wallet, prompts go to free open models via OpenRouter, which is not private inference.',
+      raw: { mock: true },
     }
   }
 

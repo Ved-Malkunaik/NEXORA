@@ -1,8 +1,8 @@
 # Nexora: private AI on NEAR
 
-A private AI assistant on NEAR. One chat, two kinds of privacy:
+An AI assistant on NEAR where you can pay without revealing who you are.
 
-- **Hide what you ask (every chat).** Prompts run in a TEE on NEAR AI Cloud. The gateway verifies the attestation before sending your prompt, and every answer shows each check. **Working.**
+- **Chat with free open models** through OpenRouter (Gemma, Nemotron). **Not private inference:** OpenRouter and the company running the model can read prompts, and free models may log them. Every answer says which model ran it. The gateway can also run NEAR AI Cloud in a TEE instead (`MODEL_PROVIDER=nearai`), with full attestation checks.
 - **Hide who pays (optional, per session).** Turn on "Pay privately with a note": buy a fixed-price note in public, then spend it with a zero-knowledge proof. The gateway verifies that a paid note backs your session without learning which account bought it. **Working**, with the limits listed below.
 - **Funding:** deposit NEAR directly. Stablecoin top-ups show real NEAR Intents (1Click) dry-run prices; executing the swap is not wired.
 
@@ -15,7 +15,7 @@ Built for the NEAR Hackathon 2026, privacy track.
 | 0 | Landing page (3D robot), navbar, app shell, wallet connect, session key, mainnet/testnet switch | Done |
 | 1 | Credits contract (Rust), tests, security pass, gateway stub | Done. Live on testnet at `credits.vedd.testnet` |
 | 2 | Every screen final, on mock data | Done. UI frozen; runs on a typed mock client (`src/client`) |
-| 3 | Contract and gateway wired to the UI | Done on testnet. Real deposits, sessions, metering and settlement; real TEE attestation; signed gateway requests; real Intents quotes |
+| 3 | Contract and gateway wired to the UI | Done on testnet. Real deposits, sessions, metering and settlement; replies from free OpenRouter models; private payment with zero-knowledge proofs; signed gateway requests; real Intents quotes |
 
 What is real and what is not, exactly:
 
@@ -24,9 +24,9 @@ What is real and what is not, exactly:
 | Credits contract: deposit, withdraw, open, settle, reclaim, receipts | Real, on testnet |
 | Gateway metering and settlement | Real. The gateway charges what it metered, never more than the cap, and settles sessions the user abandons |
 | Gateway caller authentication | Real. Every request is signed by a per-session chat key registered on-chain |
-| TEE attestation (Intel TDX + NVIDIA GPU) | Real, fetched and verified live from NEAR AI Cloud, no API key needed |
-| Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |
-| Reply signature check | Real. Each reply's signature is checked against the attested enclave key and the exact request and response bytes; verified live on testnet |
+| Model replies | Real, from free OpenRouter models, once `OPENROUTER_API_KEY` is set in `gateway/.env`. Not in a TEE: the app says so on every answer. Without a key they are simulated and say so |
+| Free-tier limits | The gateway counts requests against OpenRouter's free limits (20 a minute, 1000 a day) and refuses with a clear message before calling, so a busy minute costs nothing |
+| TEE mode (optional) | With `MODEL_PROVIDER=nearai` and a NEAR AI Cloud key, prompts run in a TEE: Intel TDX + NVIDIA attestation verified before each prompt, and each reply's signature checked. Verified live on testnet earlier; not the hosted setup |
 | Private payment (a note and a zero-knowledge proof) | Real on testnet. Semaphore v4 (Groth16) proofs made in the browser and verified by the gateway. This is the zkAPI idea built on NEAR, not the Ethereum zkAPI service. The proof is verified by the gateway, not on-chain |
 | Send NEAR from chat (private sessions) | Real. "send 0.001 NEAR to alice.testnet" opens a confirmation, then your wallet. The transfer itself is public |
 | NEAR Intents | Real dry-run prices. No swap execution |
@@ -45,7 +45,7 @@ For live chat and settlement, run the gateway in a second terminal:
 ```bash
 cd gateway
 npm install
-cp .env.example .env    # set CONTRACT_ID, GATEWAY_ACCOUNT_ID, GATEWAY_PRIVATE_KEY, optionally NEARAI_API_KEY
+cp .env.example .env    # set CONTRACT_ID, GATEWAY_ACCOUNT_ID, GATEWAY_PRIVATE_KEY and OPENROUTER_API_KEY
 npm start
 ```
 
@@ -132,8 +132,7 @@ docs/                     workflow, contract spec, security report
 
 ## Privacy limits
 
-- **The gateway operator sees your prompts.** The TEE hides them from the model provider, not from the gateway.
-- You trust the gateway's attestation checks unless you re-verify the raw quote yourself.
+- **Prompts are not private.** The gateway, OpenRouter and the company running the model can all read them, and free models may log them or train on them. Keep secrets out of chats. (In TEE mode the model host cannot, but the gateway still can.)
 - A session paid from your credits is not anonymous: sessions, caps, spend and timing are public on-chain under your account. Pay privately with a note for that.
 - **A private session hides you only among other note buyers.** Buying a note is public, so the payer of a private session is one of the accounts that bought notes. On testnet today that is a handful of notes, mostly from one account.
 - Buying a note and spending it straight away lets the gateway match the two by timing. Buy ahead, spend later.

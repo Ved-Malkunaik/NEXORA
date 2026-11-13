@@ -26,6 +26,7 @@ import type {
   Proof,
   Receipt,
   RecipientStatus,
+  RouteInfo,
   SessionInfo,
   TeeAttestation,
   Yocto,
@@ -445,9 +446,9 @@ export class LiveClient implements NexoraClient {
     return this.local<ChatMessage[]>(`chat:${sessionId}`, [])
   }
 
-  async getProof(_accountId: string, sessionId: string): Promise<TeeAttestation | null> {
+  async getProof(_accountId: string, sessionId: string): Promise<TeeAttestation | RouteInfo | null> {
     const p = this.local<Proof | null>(`proof:${sessionId}`, null)
-    return p?.kind === 'tee' ? p : null
+    return p && p.kind !== 'zk' ? p : null
   }
 
   async getPaymentProof(_accountId: string, sessionId: string): Promise<PaymentProof | null> {
@@ -516,7 +517,7 @@ export class LiveClient implements NexoraClient {
             reply.cost = ev.cost
             reply.tokens = ev.tokens
           } else if (ev.type === 'error') reply.error = ev.message
-          else if (ev.type === 'proof') this.setLocal(ev.proof.kind === 'tee' ? `proof:${sessionId}` : `payproof:${sessionId}`, ev.proof)
+          else if (ev.type === 'proof') this.setLocal(ev.proof.kind === 'zk' ? `payproof:${sessionId}` : `proof:${sessionId}`, ev.proof)
           yield ev
         }
       }
@@ -586,8 +587,16 @@ export interface GatewayHealth {
   gateway: string | null
   can_settle: boolean
   model: string
-  /** True when the gateway has a NEAR AI Cloud API key, so replies come from the real model. */
+  /** True when replies come from a real model (an API key is configured), not simulated. */
   model_live?: boolean
+  /** Who runs the model: 'openrouter', 'nearai' (TEE) or 'simulated'. */
+  provider?: 'openrouter' | 'nearai' | 'simulated'
+  /** Prompts run in an attested TEE. */
+  tee?: boolean
+  /** OpenRouter models, tried in order. */
+  models?: string[]
+  /** OpenRouter free-tier usage the gateway is tracking. */
+  limits?: { last_minute: number; today: number; per_minute: number; per_day: number }
   attested_model?: string
   attestation_verified?: boolean | null
 }

@@ -131,7 +131,22 @@ export interface NoteInfo {
   oldest_unspent_at: number | null
 }
 
-export type Proof = TeeAttestation | PaymentProof
+/** Where a reply came from when it did not run in a TEE (e.g. OpenRouter). Nothing to verify. */
+export interface RouteInfo {
+  kind: 'route'
+  /** 'OpenRouter', or 'Simulated' when no model ran. */
+  provider: string
+  model: string
+  /** The company that actually ran the model, when OpenRouter says. */
+  host: string | null
+  tee: false
+  issued_at: number
+  /** Plain statement of what this means for privacy. */
+  note: string
+  raw: Record<string, unknown>
+}
+
+export type Proof = TeeAttestation | PaymentProof | RouteInfo
 
 export type ChatErrorCode = 'CAP_REACHED' | 'SESSION_EXPIRED' | 'GATEWAY_DOWN' | 'SESSION_CLOSED'
 
@@ -187,7 +202,7 @@ export interface NexoraClient {
   getMessages(accountId: string, sessionId: string): Promise<ChatMessage[]>
   chat(accountId: string, sessionId: string, prompt: string, signal?: AbortSignal): AsyncIterable<ChatEvent>
   /** Latest TEE attestation for a session (every session). */
-  getProof(accountId: string, sessionId: string): Promise<TeeAttestation | null>
+  getProof(accountId: string, sessionId: string): Promise<TeeAttestation | RouteInfo | null>
   /** Latest payment proof for a privately paid session. */
   getPaymentProof(accountId: string, sessionId: string): Promise<PaymentProof | null>
 
