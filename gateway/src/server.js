@@ -34,6 +34,8 @@ const MODEL_ID = LIVE_MODEL ? NEARAI_MODEL : MOCK_MODEL_ID
 /** Same price as the UI shows: 0.00002 NEAR per token. */
 export const YOCTO_PER_TOKEN = 20_000_000_000_000_000_000n
 const PORT = Number(process.env.PORT || 8787)
+/** Interface to listen on. On a server behind a reverse proxy, set BIND=127.0.0.1 so only the proxy can reach it. */
+const BIND = process.env.BIND || '0.0.0.0'
 const ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(',')
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -496,8 +498,8 @@ const server = createServer(async (req, res) => {
   }
 })
 
-server.listen(PORT, () => {
-  console.log(`Nexora gateway on http://localhost:${PORT}`)
+server.listen(PORT, BIND, () => {
+  console.log(`Nexora gateway on http://${BIND === '0.0.0.0' ? 'localhost' : BIND}:${PORT}`)
   console.log(`  contract ${cfg.contractId} via ${cfg.rpcUrl}`)
   console.log(`  settles as ${cfg.gatewayId ?? '(no GATEWAY_ACCOUNT_ID)'}${cfg.privateKey ? '' : '  (no GATEWAY_PRIVATE_KEY: chat works, settling will fail)'}`)
   console.log(`  model ${MODEL_ID}${LIVE_MODEL ? '' : `  (set NEARAI_API_KEY for real replies; attestation of ${NEARAI_MODEL} is still real)`}`)

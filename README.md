@@ -127,7 +127,8 @@ docs/                     workflow, contract spec, security report
 
 ## Deploy
 
-Any static host works. `vercel.json` rewrites all routes to `index.html` for client-side routing.
+- **Frontend:** any static host works. `vercel.json` rewrites all routes to `index.html` for client-side routing. Set `VITE_GATEWAY_URL` to the gateway's HTTPS address before building.
+- **Gateway:** a long-running Node service with a persistent disk (it keeps the paid-notes list and spent-note markers in `gateway/.data`). Step-by-step for a free Oracle Cloud VM, with a one-command setup script: [deploy/oracle/README.md](deploy/oracle/README.md).
 
 ## Privacy limits
 
