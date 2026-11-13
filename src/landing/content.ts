@@ -22,7 +22,7 @@ export const PRODUCT_TABS = [
   'Private AI chat',
   'TEE inference on every chat',
   'Anonymous note payments',
-  'Send NEAR by asking',
+  'Pay by prompt (private sessions)',
   'Attestation viewer',
   'Capped chat sessions',
   'Prepaid NEAR credits',

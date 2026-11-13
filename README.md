@@ -28,7 +28,7 @@ What is real and what is not, exactly:
 | Model replies | Real once `NEARAI_API_KEY` is set in `gateway/.env`. Without it they are simulated and say so, and the proof panel shows "Not verified" |
 | Reply signature check | Real. Each reply's signature is checked against the attested enclave key and the exact request and response bytes; verified live on testnet |
 | Private payment (a note and a zero-knowledge proof) | Real on testnet. Semaphore v4 (Groth16) proofs made in the browser and verified by the gateway. This is the zkAPI idea built on NEAR, not the Ethereum zkAPI service. The proof is verified by the gateway, not on-chain |
-| Send NEAR from chat (any session) | Real. "send 0.001 NEAR to alice.testnet" opens a confirmation, then your wallet. The transfer itself is public |
+| Send NEAR from chat (private sessions) | Real. "send 0.001 NEAR to alice.testnet" opens a confirmation, then your wallet. The transfer itself is public |
 | NEAR Intents | Real dry-run prices. No swap execution |
 
 ## Run it
@@ -90,7 +90,7 @@ To use your own contract, copy `.env.example` to `.env.local` and set `VITE_TEST
   2. *Spend (anonymous).* The browser proves, in zero knowledge, that it knows the secret of one commitment in the list, without saying which. The proof carries a nullifier so a note cannot be spent twice, and is bound to a fresh signing key. The gateway verifies it and opens a 24-hour session with the note's token budget. No account id is sent, then or with any later request.
   3. The chat page shows each check the gateway ran and how many notes yours hides among.
 - **Intents quotes** ([src/client/intents.ts](src/client/intents.ts)): live dry-run prices from the 1Click API.
-- **Send NEAR from chat** ([src/lib/transferIntent.ts](src/lib/transferIntent.ts)): in any session, a clear request such as "send 0.001 NEAR to alice.testnet" is read by a strict parser in the browser, not by a model. The app checks the recipient exists, shows amount, recipient and network for confirmation, then opens the wallet. The request never reaches the gateway and costs no credits. Questions ("how do I send…?") still go to the model.
+- **Send NEAR from chat** ([src/lib/transferIntent.ts](src/lib/transferIntent.ts)): in a private session, a clear request such as "send 0.001 NEAR to alice.testnet" is read by a strict parser in the browser, not by a model. The app checks the recipient exists, shows amount, recipient and network for confirmation, then opens the wallet. The request never reaches the gateway and costs no credits. Questions ("how do I send…?") still go to the model. In a session paid from credits the app says paying by prompt needs a private session, and sends nothing.
 
 ## Testnet deployment
 

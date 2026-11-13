@@ -99,7 +99,7 @@ function PrivacyDefaults() {
         <input type="checkbox" checked={mode === 'A'} onChange={(e) => setMode(e.target.checked ? 'A' : 'B')} />
         <span>
           <strong>Pay privately with a note by default</strong>
-          <span className="small muted">{MODE_INFO.A.body}{mode === 'B' ? ' Off: the session is paid from your credits and linked to your account on-chain.' : ''}</span>
+          <span className="small muted">{MODE_INFO.A.body}{mode === 'B' ? ' Off: chat only, paid from your credits and linked to your account on-chain.' : ''}</span>
         </span>
       </label>
       <AmountField label="Default cap" value={cap} onChange={setCap} presets={['0.01', '0.05', '0.1']} error={capErr} />

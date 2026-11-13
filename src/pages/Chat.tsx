@@ -17,7 +17,7 @@ export function Chat() {
       <PageHeader
         label="02 · Chat"
         title="Private chat"
-        subtitle="Every prompt runs in a TEE on NEAR AI Cloud. Pay from your credits or privately with a note, and send NEAR just by asking."
+        subtitle="Every prompt runs in a TEE on NEAR AI Cloud. Pay from your credits, or privately with a note, which also lets you send NEAR just by asking."
       >
         <div className="row">
           <MockBadge />
@@ -151,6 +151,12 @@ function ChatPanel({
   function interceptTransfer(prompt: string): boolean {
     const parsed = parseTransfer(prompt)
     if (parsed.kind === 'none') return false
+    // Paying by prompt is a feature of private sessions only. In a credits session the request is
+    // stopped here: it is not sent to the model (which cannot pay anyone) and nothing is charged.
+    if (session.mode !== 'A') {
+      setNotice({ code: 'PRIVATE_ONLY', text: 'Sending NEAR by prompt works in private sessions only. Open a session with "Pay privately with a note" turned on. Nothing was sent.' })
+      return true
+    }
     if (parsed.kind === 'invalid' || parsed.intent.to === accountId) {
       setNotice({ code: 'TRANSFER', text: parsed.kind === 'invalid' ? `That looks like a transfer, but ${parsed.reason} Nothing was sent.` : 'That would send NEAR to your own account. Nothing was sent.' })
       return true
@@ -233,7 +239,9 @@ function ChatPanel({
       ? 'This session has expired. End it to settle, or open a new one.'
       : notice?.code === 'CAP_REACHED'
         ? 'Spending cap reached. Open a new session to continue.'
-        : `Message Nexora, or try "send 0.001 NEAR to alice.${config.networkId === 'mainnet' ? 'near' : 'testnet'}"`
+        : session.mode === 'A'
+          ? `Ask Nexora anything, or pay by prompt: "send 0.001 NEAR to alice.${config.networkId === 'mainnet' ? 'near' : 'testnet'}"`
+          : 'Ask Nexora anything. Your prompt runs in a TEE.'
 
   return (
     <section className="card chat">
@@ -290,7 +298,7 @@ function ChatPanel({
       {notice && (
         <div className={`chat-notice ${notice.code === 'GATEWAY_DOWN' ? 'warn' : ''}`} role="alert">
           <span>{notice.text}</span>
-          {notice.code === 'CAP_REACHED' || notice.code === 'SESSION_EXPIRED' || notice.code === 'SESSION_CLOSED' ? (
+          {notice.code === 'CAP_REACHED' || notice.code === 'SESSION_EXPIRED' || notice.code === 'SESSION_CLOSED' || notice.code === 'PRIVATE_ONLY' ? (
             <button className="btn btn-sm-inline" onClick={onNewSession}>
               Open new session
             </button>

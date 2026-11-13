@@ -52,7 +52,7 @@ export const MODE_INFO: Record<PrivacyMode, { short: string; title: string; body
   A: {
     short: 'Private',
     title: 'Paid privately with a note',
-    body: 'A prepaid note and a zero-knowledge proof pay for the session, so the gateway cannot tell which account is asking. Fixed price, no refund.',
+    body: 'A prepaid note and a zero-knowledge proof pay for the session, so the gateway cannot tell which account is asking. You can also send NEAR just by asking. Fixed price, no refund.',
   },
   B: {
     short: 'Credits',
@@ -278,12 +278,12 @@ export function OpenSessionModal({
         </>
       }
     >
-      <p className="small muted">Every prompt runs in a TEE on NEAR AI Cloud and every answer comes with its attestation. You can also send NEAR from any session by asking.</p>
+      <p className="small muted">Every prompt runs in a TEE on NEAR AI Cloud and every answer comes with its attestation.</p>
       <label className="toggle-row">
         <input type="checkbox" checked={mode === 'A'} onChange={(e) => setMode(e.target.checked ? 'A' : 'B')} />
         <span>
           <strong>Pay privately with a note</strong>
-          <span className="small muted">{MODE_INFO.A.body}{mode === 'B' ? ' Off: the session is paid from your credits and linked to your account on-chain.' : ''}</span>
+          <span className="small muted">{MODE_INFO.A.body}{mode === 'B' ? ' Off: chat only, paid from your credits and linked to your account on-chain.' : ''}</span>
         </span>
       </label>
       {note && (
